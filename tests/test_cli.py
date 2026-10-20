@@ -188,3 +188,89 @@ def test_index_verbose_donne_la_cause_des_erreurs(tmp_path: Path) -> None:
     result = runner.invoke(app, [*index_args(folder, tmp_path / "index.db"), "--verbose"])
 
     assert "erreur=CorruptedDocumentError : PDF illisible : corrompu.pdf" in result.stderr
+
+
+# --- search ----------------------------------------------------------------------------
+
+
+def indexed_db(tmp_path: Path) -> Path:
+    db = tmp_path / "index.db"
+    folder = tmp_path / "corpus"
+    folder.mkdir()
+    (folder / "comparatif.md").write_text(
+        "# Bases\n\n## PostgreSQL\n\nBase relationnelle, schéma strict.", encoding="utf-8"
+    )
+    for i, text in enumerate(
+        ["recette de cuisine", "horaires de natation", "liste de courses", "roman policier"]
+    ):
+        (folder / f"divers-{i}.md").write_text(text, encoding="utf-8")
+    for i in range(4):
+        (folder / f"archive-{i}.txt").write_text(f"archives municipales lot {i}", encoding="utf-8")
+    runner.invoke(app, ["index", str(folder), "--db", str(db)])
+    return db
+
+
+def test_search_affiche_rang_fichier_score_extrait_et_temps(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+
+    assert result.exit_code == 0
+    out = result.stdout
+    assert " 1. comparatif.md" in out
+    assert "## PostgreSQL Base relationnelle" in out  # extrait sur une ligne
+    assert "1 résultat en " in out and " ms" in out
+    assert "\x02" not in out and "\x03" not in out  # marqueurs internes jamais affichés
+
+
+def test_search_couleurs_dans_un_terminal(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)], color=True)
+
+    assert re.search(r"\x1b\[[0-9;]*mPostgreSQL\x1b\[0m", result.stdout)
+
+
+def test_search_sans_couleur_hors_terminal(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+
+    assert "\x1b[" not in result.stdout
+
+
+def test_search_k_limite_les_resultats(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "archives", "-k", "2", "--db", str(db)])
+
+    assert " 2. " in result.stdout
+    assert " 3. " not in result.stdout
+    assert "2 résultats en " in result.stdout
+
+
+def test_search_aucun_resultat(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "kubernetes", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "Aucun résultat" in result.stdout
+
+
+def test_search_requete_piegeuse(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", 'C++ "NOT" *', "--db", str(db)])
+
+    assert result.exit_code == 0
+
+
+def test_search_base_absente_n_est_pas_creee(tmp_path: Path) -> None:
+    db = tmp_path / "absente.db"
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+
+    assert result.exit_code == 1
+    assert "second-brain index" in result.stderr
+    assert not db.exists()
