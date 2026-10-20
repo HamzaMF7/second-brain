@@ -32,3 +32,13 @@ def default_database_path() -> Path:
     """
     data_home = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
     return Path(data_home) / "second-brain" / "index.db"
+
+
+@dataclass(frozen=True, slots=True)
+class SearchConfig:
+    snippet_tokens: int = 24  # longueur des extraits, en mots (FTS5 : 64 au maximum)
+    # Marqueurs des termes trouvés dans les extraits : caractères de contrôle absents des
+    # documents (contrairement à [[ ]], fréquent en Markdown). La CLI les met en couleur.
+    highlight_open: str = "\x02"
+    highlight_close: str = "\x03"
+    ellipsis: str = "…"
