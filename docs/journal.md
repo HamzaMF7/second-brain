@@ -73,3 +73,42 @@
 **Chiffres**
 - Fixtures : 2 documents ajoutés au 1er passage, 2 inchangés au 2e, 0 relecture de fichier.
   Pas encore d'évaluation de recherche (étape 4).
+
+## 2026-10-20 — Étape 3 : recherche lexicale BM25 (FTS5)
+
+**Fait**
+- Migration 002 : `chunks_fts` en FTS5 *external content*, triggers INSERT/DELETE/UPDATE,
+  `rebuild` pour les bases existantes ; cohérence vérifiée par `integrity-check`.
+- Interface `Retriever`, modèle `SearchResult`, `LexicalRetriever` (score = −bm25, extraits
+  `snippet()` surlignés).
+- Prétraitement des requêtes : minuscules, mots vides FR/EN, mots entre guillemets, OU.
+- Commande `second-brain search` : rang, score, extrait coloré, temps de réponse.
+- 192 tests.
+
+**Appris**
+- Index inversé, TF-IDF, BM25 : `k1` règle la saturation du TF, `b` la pénalité de longueur.
+- FTS5 rend bm25 négatif pour qu'un ORDER BY croissant mette les meilleurs en premier.
+- Sur un petit corpus, l'IDF de FTS5 devient négatif (ramené à ~0) pour un mot présent dans
+  plus de la moitié des documents : les tests ont besoin de documents de remplissage.
+- External content : supprimer de l'index exige l'ANCIEN texte exact ; une erreur corrompt
+  l'index sans message, seul `integrity-check` la révèle.
+- `unicode61 remove_diacritics 2` ignore accents et casse mais ne racinise pas :
+  « registre » ne trouve pas « registres ». `porter` racinise à l'anglaise (porte → port).
+
+**Difficile**
+- Passer de ET à OU : sans ça, aucune question en langage naturel ne trouvait rien.
+- Un « un document = un chunk » fausse BM25 : les longs documents sont fortement pénalisés.
+
+**Échecs de BM25 (tâche 3.6, sur `samples/pdf`)**
+12 questions, top 5 : rang 1 = 6/12, top 5 = 8/12, MRR ≈ 0,57 (ordre de grandeur).
+
+| Cause | Questions | Exemple | Piste |
+|---|---|---|---|
+| Synonyme / reformulation | 2 (1 absente, 1 au rang 3) | « copies informatiques des vieux dossiers communaux » → rapport sur la « numérisation des archives municipales » : absent | vectoriel (étape 6) |
+| Autre langue | 1 (rang 2, par chance) | « hybrid search evaluation recall » trouvé grâce à evaluation = évaluation | embeddings multilingues |
+| Variante morphologique | 1 (absente) | « registre délibération » vs « registres de délibérations » | préfixe ou vectoriel, à mesurer |
+| Extraction : césure | 1 (absente) | « provenance » stocké « pro-\nvenance » | recoller les césures, à évaluer |
+| Extraction : scan | 1 (absente) | courrier scanné : aucune couche de texte | OCR, hors V0 |
+
+BM25 réussit toutes les questions qui reprennent les mots du document et échoue dès que le
+vocabulaire change. Deux échecs viennent de l'extraction, pas du classement.
