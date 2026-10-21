@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from importlib.metadata import version
@@ -10,13 +11,23 @@ from typing import Annotated, Protocol
 
 import typer
 
-from second_brain.config import default_database_path
+from second_brain.config import SearchConfig, default_database_path
 from second_brain.extraction.errors import ExtractionError
 from second_brain.extraction.registry import default_registry
 from second_brain.indexing.pipeline import index_folder
+from second_brain.search.lexical import LexicalRetriever
 from second_brain.storage.db import open_database
 
 PREVIEW_CHARS = 500  # longueur de l'aperçu affiché par `extract`
+
+DbOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--db",
+        envvar="SECOND_BRAIN_DB",
+        help="Fichier de la base (défaut : ~/.local/share/second-brain/index.db).",
+    ),
+]
 
 app = typer.Typer(
     help="Mémoire personnelle locale interrogeable en langage naturel.",
@@ -57,14 +68,7 @@ def index(
         Path,
         typer.Argument(exists=True, file_okay=False, readable=True, help="Dossier à indexer."),
     ],
-    db: Annotated[
-        Path | None,
-        typer.Option(
-            "--db",
-            envvar="SECOND_BRAIN_DB",
-            help="Fichier de la base (défaut : ~/.local/share/second-brain/index.db).",
-        ),
-    ] = None,
+    db: DbOption = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Journalise chaque fichier traité.")
     ] = False,
@@ -133,9 +137,49 @@ def _verbose_logging(enabled: bool) -> Iterator[None]:
 
 
 @app.command()
-def search() -> None:
-    """Recherche dans les documents indexés (étape 3)."""
-    _not_implemented()
+def search(
+    query: Annotated[str, typer.Argument(help="Ce que tu cherches, en langage naturel.")],
+    k: Annotated[int, typer.Option("-k", min=1, help="Nombre de résultats.")] = 10,
+    db: DbOption = None,
+) -> None:
+    """Recherche lexicale (BM25) dans les documents indexés."""
+    db_path = db or default_database_path()
+    if not db_path.exists():  # ne pas créer une base vide sur une faute de frappe
+        typer.echo(
+            f"Erreur : base introuvable ({db_path}). Lance d'abord `second-brain index <dossier>`.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    config = SearchConfig()
+    conn = open_database(db_path)
+    try:
+        start = time.perf_counter()
+        results = LexicalRetriever(conn, config).search(query, k)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+    finally:
+        conn.close()
+
+    if not results:
+        typer.echo(f"Aucun résultat pour « {query} » ({elapsed_ms:.0f} ms).")
+        return
+    for rank, result in enumerate(results, start=1):
+        typer.echo(f"{rank:>2}. {typer.style(result.path.name, bold=True)}  {result.score:.2f}")
+        typer.echo(f"    {_highlight(result.snippet, config)}")
+        typer.echo(typer.style(f"    {result.path}", dim=True))
+    plural = "s" if len(results) > 1 else ""
+    typer.echo(f"\n{len(results)} résultat{plural} en {elapsed_ms:.0f} ms")
+
+
+def _highlight(snippet: str, config: SearchConfig) -> str:
+    """Extrait sur une ligne, termes trouvés en couleur (retirée hors terminal par echo)."""
+    text = " ".join(snippet.split())
+    parts = text.split(config.highlight_open)
+    pieces = [parts[0]]
+    for part in parts[1:]:
+        term, _, rest = part.partition(config.highlight_close)
+        pieces.append(typer.style(term, fg="yellow", bold=True) + rest)
+    return "".join(pieces)
 
 
 @app.command()
