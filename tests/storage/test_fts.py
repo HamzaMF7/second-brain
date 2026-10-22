@@ -98,7 +98,17 @@ def test_la_migration_indexe_les_chunks_deja_presents(tmp_path: Path) -> None:
     conn = connect(tmp_path / "a.db")
     initial = [m for m in load_migrations() if m.version == 1]
     migrate(conn, initial)
-    save_document(conn, record("/ancien.md"), [ChunkRecord(0, "document indexé avant FTS")])
+    # SQL brut : le code actuel (save_document) écrit des colonnes que la v1 n'a pas.
+    with conn:
+        conn.execute(
+            "INSERT INTO documents (path, filename, extension, size, mtime, content_hash,"
+            " status, indexed_at) VALUES ('/ancien.md', 'ancien.md', '.md', 1, 1, 'h',"
+            " 'indexed', 'x')"
+        )
+        conn.execute(
+            "INSERT INTO chunks (document_id, chunk_index, text)"
+            " VALUES (1, 0, 'document indexé avant FTS')"
+        )
 
     migrate(conn)  # applique 002 et les suivantes
 
