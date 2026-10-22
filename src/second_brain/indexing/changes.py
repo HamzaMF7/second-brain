@@ -24,6 +24,7 @@ class KnownDocument:
     mtime_ns: int
     content_hash: str | None
     had_error: bool  # statut `error` au dernier passage
+    chunker_id: str | None = None  # signature du découpage utilisé (None : inconnue)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,8 +49,13 @@ def detect_changes(
     scanned: Iterable[ScannedFile],
     known: Iterable[KnownDocument],
     hash_file: Callable[[Path], str],
+    chunker_id: str | None = None,
 ) -> ChangeSet:
-    """Classe chaque fichier et chaque document connu dans exactement une catégorie."""
+    """Classe chaque fichier et chaque document connu dans exactement une catégorie.
+
+    Si `chunker_id` est donné, un document découpé avec d'autres réglages est à refaire,
+    même si son fichier n'a pas changé.
+    """
     remaining = {document.path: document for document in known}
     changes = ChangeSet()
 
@@ -59,6 +65,9 @@ def detect_changes(
             changes.new.append(file)
         elif document.had_error:
             # Retenté à chaque passage : ex. droits rétablis par chmod, sans changer le mtime.
+            changes.modified.append(KnownChange(file, document.id, None))
+        elif chunker_id is not None and document.chunker_id != chunker_id:
+            # Découpage différent : à redécouper, inutile de lire le fichier pour le savoir.
             changes.modified.append(KnownChange(file, document.id, None))
         elif file.size == document.size and file.mtime_ns == document.mtime_ns:
             changes.unchanged.append(document)
