@@ -42,3 +42,19 @@ class SearchConfig:
     highlight_open: str = "\x02"
     highlight_close: str = "\x03"
     ellipsis: str = "…"
+    # Regroupement par document : on demande fetch_factor × k chunks au retriever (doublé
+    # tant qu'il manque des documents distincts), puis on garde le meilleur par document.
+    fetch_factor: int = 5
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkingConfig:
+    # PROVISOIRE : 400 / 50 en attendant l'évaluation (tâches 5.5 et 5.6).
+    max_tokens: int = 400  # rester sous la limite d'entrée des modèles d'embeddings (~512)
+    overlap_tokens: int = 50  # repris du chunk précédent, à l'intérieur d'une même section/page
+    # Compteur approximatif (mots × ratio) jusqu'au choix du modèle d'embeddings (étape 6).
+    # Ratio prudent : le français fait environ 1,3 à 1,5 token par mot.
+    tokens_per_word: float = 1.5
+    # Indexer aussi « titre du document > section » (colonne chunks.context). Désactivé
+    # tant que l'évaluation n'a pas mesuré son effet (tâche 5.5).
+    context_prefix: bool = False
