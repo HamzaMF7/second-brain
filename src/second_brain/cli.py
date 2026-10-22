@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import textwrap
 import time
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -11,14 +12,17 @@ from typing import Annotated, Protocol
 
 import typer
 
-from second_brain.config import SearchConfig, default_database_path
+from second_brain.chunking.structured import StructuredChunker
+from second_brain.config import ChunkingConfig, SearchConfig, default_database_path
 from second_brain.extraction.errors import ExtractionError
 from second_brain.extraction.registry import default_registry
 from second_brain.indexing.pipeline import index_folder
+from second_brain.search.grouping import search_documents
 from second_brain.search.lexical import LexicalRetriever
 from second_brain.storage.db import open_database
 
 PREVIEW_CHARS = 500  # longueur de l'aperçu affiché par `extract`
+CHUNK_PREVIEW_CHARS = 300  # début + fin d'un chunk affichés par `chunks` (sans --full)
 
 DbOption = Annotated[
     Path | None,
@@ -57,11 +61,6 @@ def main(
     """Options globales, communes à toutes les sous-commandes."""
 
 
-def _not_implemented() -> None:
-    typer.echo("pas encore implémenté", err=True)
-    raise typer.Exit(code=1)
-
-
 @app.command()
 def index(
     folder: Annotated[
@@ -93,16 +92,16 @@ def index(
     finally:
         conn.close()
 
-    scanned = f"  (dont {report.scanned_pdfs} PDF scanné(s))" if report.scanned_pdfs else ""
     touched = f"  (dont {report.touched} : métadonnées seules)" if report.touched else ""
     skipped = ", ".join(f"{reason} : {n}" for reason, n in report.skipped.most_common())
     lines = [
         ("Dossier", str(folder.resolve())),
         ("Base", str(db_path)),
-        ("Ajoutés", f"{report.added}{scanned}"),
+        ("Ajoutés", str(report.added)),
         ("Modifiés", str(report.modified)),
         ("Supprimés", str(report.deleted)),
         ("Inchangés", f"{report.unchanged + report.touched}{touched}"),
+        ("PDF scannés", f"{report.scanned_pdfs}  (ajoutés ou modifiés, sans texte exploitable)"),
         ("Erreurs", str(report.errors) + ("  (détails : --verbose)" if report.errors else "")),
         ("Ignorés", f"{report.skipped.total()}" + (f"  ({skipped})" if skipped else "")),
         ("Durée", f"{report.seconds:.1f} s"),
@@ -141,6 +140,10 @@ def search(
     query: Annotated[str, typer.Argument(help="Ce que tu cherches, en langage naturel.")],
     k: Annotated[int, typer.Option("-k", min=1, help="Nombre de résultats.")] = 10,
     db: DbOption = None,
+    all_chunks: Annotated[
+        bool,
+        typer.Option("--all-chunks", help="Un résultat par chunk, sans regroupement par document."),
+    ] = False,
 ) -> None:
     """Recherche lexicale (BM25) dans les documents indexés."""
     db_path = db or default_database_path()
@@ -155,7 +158,11 @@ def search(
     conn = open_database(db_path)
     try:
         start = time.perf_counter()
-        results = LexicalRetriever(conn, config).search(query, k)
+        retriever = LexicalRetriever(conn, config)
+        if all_chunks:
+            results = retriever.search(query, k)
+        else:
+            results = search_documents(retriever, query, k, config.fetch_factor)
         elapsed_ms = (time.perf_counter() - start) * 1000
     finally:
         conn.close()
@@ -206,6 +213,62 @@ def extract(
 
 
 @app.command()
-def chunks() -> None:
-    """Affiche les chunks d'un document (étape 5)."""
-    _not_implemented()
+def chunks(
+    path: Annotated[
+        Path,
+        typer.Argument(exists=True, dir_okay=False, readable=True, help="Fichier à découper."),
+    ],
+    max_tokens: Annotated[
+        int | None, typer.Option("--max-tokens", min=1, help="Taille maximale d'un chunk.")
+    ] = None,
+    overlap: Annotated[
+        int | None, typer.Option("--overlap", min=0, help="Chevauchement, en tokens.")
+    ] = None,
+    context: Annotated[
+        bool, typer.Option("--context", help="Calcule le préfixe « titre > section ».")
+    ] = False,
+    full: Annotated[bool, typer.Option("--full", help="Affiche le texte complet.")] = False,
+) -> None:
+    """Affiche le découpage d'un fichier en chunks, sans toucher à la base."""
+    defaults = ChunkingConfig()
+    config = ChunkingConfig(
+        max_tokens=max_tokens if max_tokens is not None else defaults.max_tokens,
+        overlap_tokens=overlap if overlap is not None else defaults.overlap_tokens,
+        context_prefix=context,
+    )
+    try:
+        doc = default_registry().for_path(path).extract(path)
+    except ExtractionError as exc:
+        typer.echo(f"Erreur : {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    pieces = StructuredChunker(config).chunk(doc)
+    for piece in pieces:
+        where = [f"tokens : {piece.token_count}", f"position : {piece.start}"]
+        if piece.page is not None:
+            where.insert(0, f"page {piece.page}")
+        typer.echo(typer.style(f"#{piece.index}", bold=True) + "  " + " · ".join(where))
+        if piece.section:
+            typer.echo(f"    section : {piece.section}")
+        if piece.context:
+            typer.echo(f"    contexte : {piece.context}")
+        text = piece.text if full else _shorten(piece.text, CHUNK_PREVIEW_CHARS)
+        typer.echo(textwrap.indent(text, "    │ "))
+        typer.echo()
+
+    sizes = [p.token_count for p in pieces]
+    summary = f"{len(pieces)} chunk{'s' if len(pieces) > 1 else ''}"
+    if sizes:
+        summary += f" · tokens min {min(sizes)} / moy {sum(sizes) // len(sizes)} / max {max(sizes)}"
+    summary += f" · réglages : {config.max_tokens} tokens, chevauchement {config.overlap_tokens}"
+    if doc.is_scanned:
+        summary += " · document scanné : aucun texte exploitable"
+    typer.echo(summary)
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Début et fin d'un texte trop long, pour voir où le chunk commence et s'arrête."""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n[…]\n{text[-half:]}"
