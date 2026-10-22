@@ -112,3 +112,40 @@
 
 BM25 réussit toutes les questions qui reprennent les mots du document et échoue dès que le
 vocabulaire change. Deux échecs viennent de l'extraction, pas du classement.
+
+## 2026-10-22 — Étape 5 : chunking (taille provisoire)
+
+**Fait**
+- `StructuredChunker` : sections Markdown (chemin des titres) ou pages PDF, puis paragraphes
+  → phrases → lignes → mots, regroupés jusqu'à 400 tokens avec 50 de chevauchement.
+  Chaque chunk est un extrait exact du texte (positions, pas de texte recomposé).
+- Tokens comptés approximativement (mots × 1,5) derrière l'interface `TokenCounter`.
+- Préfixe « titre > section » optionnel : colonne `chunks.context`, 2e colonne FTS5,
+  jamais affiché (migration 003).
+- Signature du découpage par document (`chunker_id`, migration 004) : changer les réglages
+  redécoupe automatiquement.
+- Résultats de recherche regroupés par document ; commande `chunks <fichier>`.
+- 246 tests.
+- **Reportées** : 5.5 (mesure 200 / 400 / 800, avec et sans préfixe) et 5.6 (ADR),
+  faute d'évaluation (étape 4 reportée).
+
+**Appris**
+- Découper sert BM25 (pénalité de longueur), les embeddings (un vecteur = une idée) et la
+  limite d'entrée des modèles (~512 tokens, le reste est tronqué en silence).
+- Un token n'est pas un mot : ~1,3 à 1,5 token par mot en français.
+- Le chevauchement coûte cher : 100 sur 400 → 13 chunks au lieu de 10 (+30 %).
+- Deux colonnes FTS5 permettent d'indexer un texte sans l'afficher.
+- Une donnée dérivée (chunks, plus tard vecteurs) doit porter la signature de ce qui l'a
+  produite, sinon elle reste périmée quand les réglages changent.
+
+**Difficile**
+- Des tests sur du texte « propre » passaient alors qu'un vrai PDF donnait un chunk
+  commençant par « gée cette année » : dans un PDF, chaque ligne visuelle finit par `\n`,
+  donc les phrases doivent passer avant les lignes.
+- L'intégration a révélé deux manques : les bases existantes n'étaient pas redécoupées, et
+  la recherche affichait trois fois le même document.
+
+**Chiffres**
+- Corpus `samples/pdf` : 5 → 19 chunks. « recherche hybride » : écart slides / article
+  passé de 1,05 / 0,62 à 2,87 / 2,77 (la pénalité de longueur a presque disparu).
+  Pas de mesure Recall/MRR : l'évaluation n'existe pas encore.
