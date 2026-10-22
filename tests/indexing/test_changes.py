@@ -175,3 +175,52 @@ def test_sha256_file_lit_les_gros_fichiers_par_blocs(tmp_path: Path) -> None:
     path.write_bytes(b"x" * 3_000_000)
 
     assert sha256_file(path) == hashlib.sha256(b"x" * 3_000_000).hexdigest()
+
+
+# --- Signature du découpage ----------------------------------------------------------------
+
+
+def test_decoupage_different_rend_le_document_modifie_sans_hash() -> None:
+    hasher = FakeHasher()
+    file = scanned("a.md")
+    document = KnownDocument(
+        id=7,
+        path=file.path,
+        size=100,
+        mtime_ns=1_000,
+        content_hash="h",
+        had_error=False,
+        chunker_id="structured:max400",
+    )
+
+    changes = detect_changes([file], [document], hasher, chunker_id="structured:max200")
+
+    assert changes.modified == [KnownChange(file=file, document_id=7, content_hash=None)]
+    assert hasher.calls == []
+
+
+def test_meme_decoupage_inchange() -> None:
+    file = scanned("a.md")
+    document = KnownDocument(
+        id=7,
+        path=file.path,
+        size=100,
+        mtime_ns=1_000,
+        content_hash="h",
+        had_error=False,
+        chunker_id="structured:max400",
+    )
+
+    changes = detect_changes([file], [document], FakeHasher(), chunker_id="structured:max400")
+
+    assert changes.unchanged == [document]
+
+
+def test_document_sans_signature_est_redecoupe() -> None:
+    # Base remplie avant la migration 004 : chunker_id inconnu (NULL).
+    file = scanned("a.md")
+    document = known("a.md", id=7)
+
+    changes = detect_changes([file], [document], FakeHasher(), chunker_id="structured:max400")
+
+    assert [c.document_id for c in changes.modified] == [7]

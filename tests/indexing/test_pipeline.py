@@ -8,6 +8,8 @@ from pathlib import Path
 import pymupdf
 import pytest
 
+from second_brain.chunking.structured import StructuredChunker
+from second_brain.config import ChunkingConfig
 from second_brain.extraction.registry import default_registry
 from second_brain.indexing.pipeline import IndexReport, index_folder
 from second_brain.storage.db import open_database
@@ -227,3 +229,109 @@ def test_rapport_compte_les_fichiers_ignores(conn: sqlite3.Connection, root: Pat
 
     assert sum(report.skipped.values()) == 1
     assert report.seconds >= 0
+
+
+# --- Découpage (étape 5) -------------------------------------------------------------------
+
+
+def long_text(paragraphs: int, tag: str) -> str:
+    return "\n\n".join(
+        f"Paragraphe {tag} numéro {i}, inventé pour les tests. " * 4 for i in range(paragraphs)
+    )
+
+
+def chunk_rows(conn: sqlite3.Connection, name: str) -> list[tuple[int, str, str | None]]:
+    return conn.execute(
+        "SELECT c.chunk_index, c.text, c.section FROM chunks c"
+        " JOIN documents d ON d.id = c.document_id WHERE d.filename = ? ORDER BY c.chunk_index",
+        (name,),
+    ).fetchall()
+
+
+def small_chunker() -> StructuredChunker:
+    return StructuredChunker(ChunkingConfig(max_tokens=60, overlap_tokens=0))
+
+
+def test_un_long_document_est_decoupe_en_plusieurs_chunks(
+    conn: sqlite3.Connection, root: Path
+) -> None:
+    write(root / "long.md", f"# Partie A\n\n{long_text(5, 'a')}\n\n# Partie B\n\nFin.")
+
+    index_folder(conn, root, default_registry(), chunker=small_chunker())
+
+    rows = chunk_rows(conn, "long.md")
+    assert len(rows) > 3
+    assert [index for index, _, _ in rows] == list(range(len(rows)))
+    assert {section for _, _, section in rows} == {"Partie A", "Partie B"}
+
+
+def test_les_pages_pdf_sont_enregistrees(conn: sqlite3.Connection, root: Path) -> None:
+    pdf = pymupdf.open()
+    for i in range(3):
+        pdf.new_page().insert_text((72, 72), f"Texte inventé de la page {i + 1}. " * 5)
+    pdf.save(root / "doc.pdf")
+
+    run(conn, root)
+
+    pages = [p for (p,) in conn.execute("SELECT page FROM chunks ORDER BY chunk_index")]
+    assert pages == [1, 2, 3]
+
+
+def test_reindexer_remplace_tous_les_anciens_chunks(conn: sqlite3.Connection, root: Path) -> None:
+    path = write(root / "doc.md", long_text(12, "ancien"))
+    index_folder(conn, root, default_registry(), chunker=small_chunker())
+    assert len(chunk_rows(conn, "doc.md")) > 5
+
+    write(path, "Version courte et nouvelle.")
+    report = index_folder(conn, root, default_registry(), chunker=small_chunker())
+
+    assert report.modified == 1
+    assert [text for _, text, _ in chunk_rows(conn, "doc.md")] == ["Version courte et nouvelle."]
+    assert conn.execute("SELECT count(*) FROM chunks").fetchone() == (1,)
+    # L'index FTS ne connaît plus aucun ancien passage.
+    assert conn.execute(
+        "SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH 'ancien'"
+    ).fetchone() == (0,)
+    with conn:
+        conn.execute("INSERT INTO chunks_fts (chunks_fts, rank) VALUES ('integrity-check', 1)")
+
+
+def test_le_prefixe_de_contexte_est_enregistre_si_active(
+    conn: sqlite3.Connection, root: Path
+) -> None:
+    write(root / "notes.md", "# Bases de données\n\n## PostgreSQL\n\nRelationnelle.")
+    chunker = StructuredChunker(ChunkingConfig(context_prefix=True))
+
+    index_folder(conn, root, default_registry(), chunker=chunker)
+
+    contexts = [c for (c,) in conn.execute("SELECT context FROM chunks ORDER BY chunk_index")]
+    assert contexts == ["Bases de données", "Bases de données > PostgreSQL"]
+
+
+def chunk_count(conn: sqlite3.Connection) -> int:
+    (count,) = conn.execute("SELECT count(*) FROM chunks").fetchone()
+    return int(count)
+
+
+def test_changer_le_decoupage_redecoupe_les_documents_inchanges(
+    conn: sqlite3.Connection, root: Path
+) -> None:
+    write(root / "doc.md", long_text(10, "x"))
+    large = StructuredChunker(ChunkingConfig(max_tokens=400, overlap_tokens=0))
+    small = StructuredChunker(ChunkingConfig(max_tokens=60, overlap_tokens=0))
+    index_folder(conn, root, default_registry(), chunker=large)
+    before = chunk_count(conn)
+
+    report = index_folder(conn, root, default_registry(), chunker=small)
+
+    assert report.modified == 1
+    assert chunk_count(conn) > before
+    assert index_folder(conn, root, default_registry(), chunker=small).unchanged == 1
+
+
+def test_la_signature_du_decoupage_est_enregistree(conn: sqlite3.Connection, root: Path) -> None:
+    write(root / "a.md", "texte")
+
+    run(conn, root)
+
+    assert conn.execute("SELECT chunker_id FROM documents").fetchone() == (StructuredChunker().id,)

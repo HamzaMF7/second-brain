@@ -12,6 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from second_brain.chunking.base import Chunker
+from second_brain.chunking.structured import StructuredChunker
 from second_brain.config import ScanConfig
 from second_brain.extraction.errors import ExtractionError
 from second_brain.extraction.registry import ExtractorRegistry
@@ -51,12 +53,14 @@ def index_folder(
     root: Path,
     registry: ExtractorRegistry,
     *,
+    chunker: Chunker | None = None,
     scan_config: ScanConfig | None = None,
     hash_file: Callable[[Path], str] = sha256_file,
     on_progress: ProgressCallback | None = None,
 ) -> IndexReport:
     """Met la base à jour pour le dossier `root` et renvoie un résumé."""
     start = time.perf_counter()
+    chunker = chunker or StructuredChunker()
     root = root.resolve()
     scanned = scan(root, registry.supports, scan_config)
     known = [
@@ -67,10 +71,11 @@ def index_folder(
             mtime_ns=d.mtime_ns,
             content_hash=d.content_hash,
             had_error=d.status is DocumentStatus.ERROR,
+            chunker_id=d.chunker_id,
         )
         for d in documents_under(conn, root)
     ]
-    changes = detect_changes(scanned.files, known, hash_file)
+    changes = detect_changes(scanned.files, known, hash_file, chunker_id=chunker.id)
     report = IndexReport(unchanged=len(changes.unchanged), skipped=scanned.skipped)
 
     ensure_folder(conn, root)
@@ -83,7 +88,7 @@ def index_folder(
     todo: list[tuple[ScannedFile, str | None, bool]] = [(f, None, True) for f in changes.new]
     todo += [(c.file, c.content_hash, False) for c in changes.modified]
     for done, (file, content_hash, is_new) in enumerate(todo, start=1):
-        status = _index_file(conn, registry, file, content_hash, hash_file)
+        status = _index_file(conn, registry, chunker, file, content_hash, hash_file)
         if status is DocumentStatus.ERROR:
             report.errors += 1
         elif is_new:
@@ -102,6 +107,7 @@ def index_folder(
 def _index_file(
     conn: sqlite3.Connection,
     registry: ExtractorRegistry,
+    chunker: Chunker,
     file: ScannedFile,
     content_hash: str | None,
     hash_file: Callable[[Path], str],
@@ -123,11 +129,22 @@ def _index_file(
         error = f"{type(exc).__name__} (erreur inattendue) : {file.path.name}"
     else:
         status = DocumentStatus.SCANNED if doc.is_scanned else DocumentStatus.INDEXED
-        # Étape 2 : un document = un chunk. Le découpage arrive à l'étape 5.
-        if status is DocumentStatus.INDEXED and doc.text.strip():
-            chunks = [ChunkRecord(chunk_index=0, text=doc.text)]
+        if status is DocumentStatus.INDEXED:
+            chunks = [
+                ChunkRecord(
+                    chunk_index=c.index,
+                    text=c.text,
+                    page=c.page,
+                    section=c.section,
+                    token_count=c.token_count,
+                    context=c.context,
+                )
+                for c in chunker.chunk(doc)
+            ]
 
-    record = DocumentRecord(file.path, file.size, file.mtime_ns, content_hash, status, error)
+    record = DocumentRecord(
+        file.path, file.size, file.mtime_ns, content_hash, status, error, chunker.id
+    )
     document_id = save_document(conn, record, chunks)
     logger.info(
         "document_id=%d fichier=%s statut=%s durée=%.0f ms%s",

@@ -11,9 +11,10 @@ from second_brain.search.query import to_fts5_query
 # `rank` vaut bm25(chunks_fts) : NÉGATIF, plus petit = meilleur, pour qu'un ORDER BY
 # croissant mette les meilleurs en premier (et ORDER BY rank est optimisé par FTS5).
 # On expose -rank : dans tout le projet, un score plus grand est meilleur.
+# snippet(..., 1, ...) : colonne `text` (la colonne 0, `context`, n'est jamais affichée).
 _SQL = """
 SELECT c.id, c.document_id, d.path, -chunks_fts.rank,
-       snippet(chunks_fts, 0, ?, ?, ?, ?), c.page, c.section
+       snippet(chunks_fts, 1, ?, ?, ?, ?), c.page, c.section
 FROM chunks_fts
 JOIN chunks c ON c.id = chunks_fts.rowid
 JOIN documents d ON d.id = c.document_id

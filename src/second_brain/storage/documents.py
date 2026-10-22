@@ -27,6 +27,7 @@ class StoredDocument:
     mtime_ns: int
     content_hash: str | None
     status: DocumentStatus
+    chunker_id: str | None = None  # NULL : indexé avant la migration 004
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,7 @@ class DocumentRecord:
     content_hash: str | None
     status: DocumentStatus
     error: str | None = None
+    chunker_id: str | None = None  # signature du découpage utilisé
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,7 @@ class ChunkRecord:
     page: int | None = None
     section: str | None = None
     token_count: int | None = None
+    context: str | None = None  # préfixe indexé « titre > section », jamais affiché
 
 
 def documents_under(conn: sqlite3.Connection, root: Path) -> list[StoredDocument]:
@@ -58,11 +61,14 @@ def documents_under(conn: sqlite3.Connection, root: Path) -> list[StoredDocument
     seraient interprétés comme des jokers.
     """
     rows = conn.execute(
-        "SELECT id, path, size, mtime, content_hash, status FROM documents ORDER BY path"
+        "SELECT id, path, size, mtime, content_hash, status, chunker_id"
+        " FROM documents ORDER BY path"
     ).fetchall()
     return [
-        StoredDocument(id, Path(path), size, mtime, content_hash, DocumentStatus(status))
-        for id, path, size, mtime, content_hash, status in rows
+        StoredDocument(
+            id, Path(path), size, mtime, content_hash, DocumentStatus(status), chunker_id
+        )
+        for id, path, size, mtime, content_hash, status, chunker_id in rows
         if Path(path).is_relative_to(root)
     ]
 
@@ -79,15 +85,17 @@ def save_document(
         (document_id,) = conn.execute(
             """
             INSERT INTO documents
-                (path, filename, extension, size, mtime, content_hash, status, error, indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (path, filename, extension, size, mtime, content_hash, status, error,
+                 indexed_at, chunker_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (path) DO UPDATE SET
                 size = excluded.size,
                 mtime = excluded.mtime,
                 content_hash = excluded.content_hash,
                 status = excluded.status,
                 error = excluded.error,
-                indexed_at = excluded.indexed_at
+                indexed_at = excluded.indexed_at,
+                chunker_id = excluded.chunker_id
             RETURNING id
             """,
             (
@@ -100,14 +108,16 @@ def save_document(
                 record.status.value,
                 record.error,
                 _now(),
+                record.chunker_id,
             ),
         ).fetchone()
         conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
         conn.executemany(
-            "INSERT INTO chunks (document_id, chunk_index, text, page, section, token_count)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO chunks"
+            " (document_id, chunk_index, text, page, section, token_count, context)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
-                (document_id, c.chunk_index, c.text, c.page, c.section, c.token_count)
+                (document_id, c.chunk_index, c.text, c.page, c.section, c.token_count, c.context)
                 for c in chunks
             ],
         )

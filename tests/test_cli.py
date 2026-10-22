@@ -274,3 +274,104 @@ def test_search_base_absente_n_est_pas_creee(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert "second-brain index" in result.stderr
     assert not db.exists()
+
+
+# --- chunks ----------------------------------------------------------------------------
+
+
+def test_chunks_affiche_le_decoupage_d_un_fichier() -> None:
+    result = runner.invoke(app, ["chunks", str(FIXTURES / "comparatif-bdd.md")])
+
+    assert result.exit_code == 0
+    out = ANSI_ESCAPE.sub("", result.stdout)
+    assert "5 chunks" in out
+    assert "#0" in out and "#4" in out
+    assert "section : Comparatif des bases de données > MongoDB" in out
+    assert "## MongoDB" in out
+
+
+def test_chunks_reglages_en_option(tmp_path: Path) -> None:
+    path = tmp_path / "long.txt"
+    path.write_text(" ".join(f"Phrase inventée numéro {i}." for i in range(200)), encoding="utf-8")
+
+    small = runner.invoke(app, ["chunks", str(path), "--max-tokens", "50"])
+    large = runner.invoke(app, ["chunks", str(path), "--max-tokens", "400"])
+
+    def count(out: str) -> int:
+        return int(re.search(r"(\d+) chunks?", ANSI_ESCAPE.sub("", out)).group(1))  # type: ignore[union-attr]
+
+    assert count(small.stdout) > count(large.stdout) > 1
+
+
+def test_chunks_affiche_le_contexte_avec_option() -> None:
+    result = runner.invoke(app, ["chunks", str(FIXTURES / "comparatif-bdd.md"), "--context"])
+
+    assert "contexte : Comparatif des bases de données > PostgreSQL" in result.stdout
+
+
+def test_chunks_montre_debut_et_fin_et_tout_avec_full(tmp_path: Path) -> None:
+    path = tmp_path / "a.txt"
+    words = ["mot"] * 100 + ["MILIEU_DU_TEXTE"] + ["mot"] * 100
+    path.write_text("DÉBUT " + " ".join(words) + " FIN", encoding="utf-8")
+
+    short = runner.invoke(app, ["chunks", str(path), "--max-tokens", "1000"])
+    full = runner.invoke(app, ["chunks", str(path), "--max-tokens", "1000", "--full"])
+
+    assert "DÉBUT" in short.stdout and "FIN" in short.stdout and "[…]" in short.stdout
+    assert "MILIEU_DU_TEXTE" not in short.stdout
+    assert "MILIEU_DU_TEXTE" in full.stdout
+
+
+def test_chunks_pdf_scanne_sans_chunk(tmp_path: Path) -> None:
+    path = tmp_path / "scan.pdf"
+    pdf = pymupdf.open()
+    pdf.new_page()
+    pdf.save(path)
+
+    result = runner.invoke(app, ["chunks", str(path)])
+
+    assert result.exit_code == 0
+    assert "0 chunk" in result.stdout
+    assert "scanné" in result.stdout
+
+
+def test_chunks_format_non_supporte(tmp_path: Path) -> None:
+    path = tmp_path / "a.xlsx"
+    path.write_bytes(b"")
+
+    result = runner.invoke(app, ["chunks", str(path)])
+
+    assert result.exit_code == 1
+    assert "Format non supporté" in result.stderr
+
+
+def test_search_un_document_par_ligne_et_tous_les_chunks_en_option(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    folder = tmp_path / "corpus"
+    folder.mkdir()
+    sections = "\n\n".join(f"## Partie {i}\n\nArchives municipales, lot {i}." for i in range(6))
+    (folder / "gros.md").write_text(f"# Archives\n\n{sections}", encoding="utf-8")
+    (folder / "petit.md").write_text("Les archives scolaires.", encoding="utf-8")
+    for i, text in enumerate(["recette", "natation", "courses", "roman", "vacances"]):
+        (folder / f"divers-{i}.md").write_text(text, encoding="utf-8")
+    runner.invoke(app, ["index", str(folder), "--db", str(db)])
+
+    grouped = runner.invoke(app, ["search", "archives", "--db", str(db)]).stdout
+    raw = runner.invoke(app, ["search", "archives", "--all-chunks", "--db", str(db)]).stdout
+
+    assert grouped.count("gros.md  ") == 1
+    assert "2 résultats" in grouped
+    assert raw.count("gros.md  ") > 1
+
+
+def test_index_compte_les_pdf_scannes_a_part(tmp_path: Path) -> None:
+    folder = tmp_path / "corpus"
+    folder.mkdir()
+    pdf = pymupdf.open()
+    pdf.new_page()
+    pdf.save(folder / "scan.pdf")
+
+    out = runner.invoke(app, ["index", str(folder), "--db", str(tmp_path / "i.db")]).stdout
+
+    assert "Ajoutés     : 1" in out
+    assert "PDF scannés : 1" in out
