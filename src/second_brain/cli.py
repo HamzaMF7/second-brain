@@ -4,7 +4,7 @@ import logging
 import sys
 import textwrap
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from importlib.metadata import version
 from pathlib import Path
@@ -13,10 +13,17 @@ from typing import Annotated, Protocol
 import typer
 
 from second_brain.chunking.structured import StructuredChunker
-from second_brain.config import ChunkingConfig, SearchConfig, default_database_path
+from second_brain.config import (
+    ChunkingConfig,
+    EmbeddingConfig,
+    SearchConfig,
+    default_database_path,
+)
+from second_brain.embeddings.base import Embedder
+from second_brain.embeddings.fastembed_embedder import FastEmbedEmbedder
 from second_brain.extraction.errors import ExtractionError
 from second_brain.extraction.registry import default_registry
-from second_brain.indexing.pipeline import index_folder
+from second_brain.indexing.pipeline import EmbeddingError, index_folder
 from second_brain.search.grouping import search_documents
 from second_brain.search.lexical import LexicalRetriever
 from second_brain.storage.db import open_database
@@ -74,21 +81,26 @@ def index(
 ) -> None:
     """Indexe un dossier : ajoute, met à jour et purge les documents."""
     db_path = db or default_database_path()
+    embedding_config = EmbeddingConfig()
+    embedder = _make_embedder(embedding_config)
     conn = open_database(db_path)
     try:
         with _verbose_logging(verbose), ExitStack() as stack:
-            bars: list[_Updatable] = []
-
-            def on_progress(done: int, total: int) -> None:
-                if not bars:  # le total n'est connu qu'après le scan
-                    bars.append(
-                        stack.enter_context(
-                            typer.progressbar(length=total, label="Indexation", file=sys.stderr)
-                        )
-                    )
-                bars[0].update(1)
-
-            report = index_folder(conn, folder, default_registry(), on_progress=on_progress)
+            report = index_folder(
+                conn,
+                folder,
+                default_registry(),
+                on_progress=_progress_bar(stack, "Indexation"),
+                embedder=embedder,
+                embedding_config=embedding_config,
+                on_embed_progress=_progress_bar(stack, "Embeddings"),
+            )
+    except EmbeddingError as exc:
+        typer.echo(
+            f"Erreur : {exc}. Le texte est indexé ; relancez `index` pour finir les vecteurs.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
     finally:
         conn.close()
 
@@ -104,6 +116,11 @@ def index(
         ("PDF scannés", f"{report.scanned_pdfs}  (ajoutés ou modifiés, sans texte exploitable)"),
         ("Erreurs", str(report.errors) + ("  (détails : --verbose)" if report.errors else "")),
         ("Ignorés", f"{report.skipped.total()}" + (f"  ({skipped})" if skipped else "")),
+        (
+            "Vecteurs",
+            f"{report.embedded} calculés en {report.embedding_seconds:.1f} s"
+            f"  ({embedder.model_id})",
+        ),
         ("Durée", f"{report.seconds:.1f} s"),
     ]
     for label, value in lines:
@@ -114,6 +131,31 @@ class _Updatable(Protocol):
     """Ce que la commande utilise de la barre de progression de Typer."""
 
     def update(self, n_steps: int) -> None: ...
+
+
+def _make_embedder(config: EmbeddingConfig) -> Embedder:
+    """Point unique de construction du modèle (remplacé par un faux dans les tests de la CLI).
+
+    Le modèle n'est chargé, voire téléchargé, qu'au premier vecteur à calculer.
+    """
+    return FastEmbedEmbedder(config)
+
+
+def _progress_bar(stack: ExitStack, label: str) -> Callable[[int, int], None]:
+    """Callback de progression qui ouvre la barre au premier appel (le total est alors connu)."""
+    bars: list[_Updatable] = []
+    shown = 0
+
+    def on_progress(done: int, total: int) -> None:
+        nonlocal shown
+        if not bars:
+            bars.append(
+                stack.enter_context(typer.progressbar(length=total, label=label, file=sys.stderr))
+            )
+        bars[0].update(done - shown)
+        shown = done
+
+    return on_progress
 
 
 @contextmanager

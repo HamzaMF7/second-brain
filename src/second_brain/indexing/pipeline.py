@@ -1,7 +1,11 @@
-"""Pipeline d'indexation : scan → changements → extraction → base.
+"""Pipeline d'indexation : scan → changements → extraction → base, puis vecteurs.
 
-Un document = une transaction. Une erreur sur un fichier lui donne le statut `error`
-et le pipeline continue. Les logs ne contiennent que document_id, nom, statut et durée.
+Phase 1 (texte) : un document = une transaction. Une erreur sur un fichier lui donne le
+statut `error` et le pipeline continue.
+Phase 2 (vecteurs) : index dérivé, calculé par lots pour tous les chunks sans vecteur ou
+d'un autre modèle. Un vecteur n'est jamais périmé (supprimé avec son chunk), seulement
+manquant : une interruption est reprise au passage suivant.
+Les logs ne contiennent que document_id, nom, statut, compteurs et durées.
 """
 
 import logging
@@ -14,7 +18,8 @@ from pathlib import Path
 
 from second_brain.chunking.base import Chunker
 from second_brain.chunking.structured import StructuredChunker
-from second_brain.config import ScanConfig
+from second_brain.config import EmbeddingConfig, ScanConfig
+from second_brain.embeddings.base import Embedder
 from second_brain.extraction.errors import ExtractionError
 from second_brain.extraction.registry import ExtractorRegistry
 from second_brain.indexing.changes import KnownDocument, detect_changes, sha256_file
@@ -29,10 +34,15 @@ from second_brain.storage.documents import (
     save_document,
     update_file_metadata,
 )
+from second_brain.storage.vectors import chunk_texts, chunks_needing_vectors, save_vectors
 
 logger = logging.getLogger(__name__)
 
-ProgressCallback = Callable[[int, int], None]  # (fichiers traités, total à traiter)
+ProgressCallback = Callable[[int, int], None]  # (éléments traités, total à traiter)
+
+
+class EmbeddingError(Exception):
+    """Le modèle d'embeddings a échoué : le texte est indexé, les vecteurs sont incomplets."""
 
 
 @dataclass(slots=True)
@@ -45,6 +55,8 @@ class IndexReport:
     scanned_pdfs: int = 0  # comptés aussi dans added ou modified
     errors: int = 0
     skipped: Counter[SkipReason] = field(default_factory=Counter)
+    embedded: int = 0  # vecteurs calculés (nouveaux chunks ou changement de modèle)
+    embedding_seconds: float = 0.0
     seconds: float = 0.0
 
 
@@ -57,8 +69,14 @@ def index_folder(
     scan_config: ScanConfig | None = None,
     hash_file: Callable[[Path], str] = sha256_file,
     on_progress: ProgressCallback | None = None,
+    embedder: Embedder | None = None,
+    embedding_config: EmbeddingConfig | None = None,
+    on_embed_progress: ProgressCallback | None = None,
 ) -> IndexReport:
-    """Met la base à jour pour le dossier `root` et renvoie un résumé."""
+    """Met la base à jour pour le dossier `root` et renvoie un résumé.
+
+    Sans `embedder`, la phase 2 (vecteurs) est sautée.
+    """
     start = time.perf_counter()
     chunker = chunker or StructuredChunker()
     root = root.resolve()
@@ -100,8 +118,48 @@ def index_folder(
         if on_progress is not None:
             on_progress(done, len(todo))
 
+    if embedder is not None:
+        embed_start = time.perf_counter()
+        batch_size = (embedding_config or EmbeddingConfig()).batch_size
+        report.embedded = _embed_pending(conn, embedder, batch_size, on_embed_progress)
+        report.embedding_seconds = time.perf_counter() - embed_start
+        logger.info(
+            "vecteurs=%d modèle=%s durée=%.1f s",
+            report.embedded,
+            embedder.model_id,
+            report.embedding_seconds,
+        )
+
     report.seconds = time.perf_counter() - start
     return report
+
+
+def _embed_pending(
+    conn: sqlite3.Connection,
+    embedder: Embedder,
+    batch_size: int,
+    on_progress: ProgressCallback | None,
+) -> int:
+    """Calcule et enregistre, lot par lot, les vecteurs manquants ; renvoie leur nombre.
+
+    Chaque lot est enregistré dès qu'il est calculé : après une erreur, les lots finis
+    sont gardés et le passage suivant ne traite que le reste.
+    """
+    pending = chunks_needing_vectors(conn, embedder.model_id)
+    for start in range(0, len(pending), batch_size):
+        rows = chunk_texts(conn, pending[start : start + batch_size])
+        texts = [f"{context}\n\n{text}" if context else text for _, text, context in rows]
+        try:
+            vectors = embedder.embed_passages(texts)
+        except Exception as exc:  # message du modèle inconnu : jamais recopié (contenu ?)
+            raise EmbeddingError(
+                f"échec du modèle {embedder.model_id} ({type(exc).__name__})"
+            ) from None
+        ids = [chunk_id for chunk_id, _, _ in rows]
+        save_vectors(conn, embedder.model_id, list(zip(ids, vectors, strict=True)))
+        if on_progress is not None:
+            on_progress(min(start + batch_size, len(pending)), len(pending))
+    return len(pending)
 
 
 def _index_file(

@@ -48,6 +48,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = ["-ra", "--strict-markers", "--import-mode=importlib", "-m", "not model"]
 markers = [
   "model: utilise un vrai modèle d'embeddings, téléchargé au premier lancement (uv run pytest -m model)",

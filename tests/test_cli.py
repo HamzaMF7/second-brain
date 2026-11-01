@@ -3,12 +3,23 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pymupdf
+import pytest
+from fakes import FakeEmbedder
 from typer.testing import CliRunner
 
+from second_brain import cli
 from second_brain.cli import app
 
 runner = CliRunner()
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")  # codes de style du terminal : \x1b[1m, \x1b[0m…
+
+
+@pytest.fixture(autouse=True)
+def fake_embedder(monkeypatch: pytest.MonkeyPatch) -> FakeEmbedder:
+    """Jamais de vrai modèle dans les tests de la CLI (ni téléchargement, ni lenteur)."""
+    embedder = FakeEmbedder("faux#1")
+    monkeypatch.setattr(cli, "_make_embedder", lambda config: embedder)
+    return embedder
 
 
 def test_version_affiche_la_version_du_paquet() -> None:
@@ -131,6 +142,24 @@ def test_index_affiche_le_resume(tmp_path: Path) -> None:
     assert "Supprimés   : 0" in out
     assert "Ignorés     : 1" in out
     assert "Durée" in out
+
+
+def test_index_calcule_les_vecteurs(tmp_path: Path) -> None:
+    result = runner.invoke(app, index_args(make_folder(tmp_path), tmp_path / "index.db"))
+
+    assert result.exit_code == 0
+    assert "Vecteurs    : 2 calculés en" in ANSI_ESCAPE.sub("", result.stdout)
+    assert "(faux#1)" in result.stdout
+
+
+def test_index_modele_en_panne(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+    fake_embedder.fail_on_call = 1
+
+    result = runner.invoke(app, index_args(make_folder(tmp_path), tmp_path / "index.db"))
+
+    assert result.exit_code == 1
+    assert "échec du modèle faux#1 (RuntimeError)" in result.stderr
+    assert "relancez `index`" in result.stderr
 
 
 def test_index_deuxieme_passage_inchange(tmp_path: Path) -> None:

@@ -30,6 +30,35 @@ def save_vectors(
         )
 
 
+def chunks_needing_vectors(conn: sqlite3.Connection, model_id: str) -> list[int]:
+    """Identifiants des chunks sans vecteur, ou dont le vecteur vient d'un autre modèle.
+
+    Toute la base, pas seulement un dossier : un changement de modèle vaut partout.
+    """
+    rows = conn.execute(
+        """
+        SELECT c.id FROM chunks c
+        LEFT JOIN chunk_vectors v ON v.chunk_id = c.id
+        WHERE v.chunk_id IS NULL OR v.model_id != ?
+        ORDER BY c.id
+        """,
+        (model_id,),
+    ).fetchall()
+    return [chunk_id for (chunk_id,) in rows]
+
+
+def chunk_texts(
+    conn: sqlite3.Connection, chunk_ids: Sequence[int]
+) -> list[tuple[int, str, str | None]]:
+    """(id, texte, contexte) des chunks demandés, dans l'ordre de `chunk_ids`."""
+    placeholders = ", ".join("?" * len(chunk_ids))
+    rows = conn.execute(
+        f"SELECT id, text, context FROM chunks WHERE id IN ({placeholders})", list(chunk_ids)
+    ).fetchall()
+    by_id = {row[0]: row for row in rows}
+    return [by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in by_id]
+
+
 def get_vector(conn: sqlite3.Connection, chunk_id: int) -> tuple[str, list[float]] | None:
     """(model_id, vecteur) du chunk, ou None s'il n'a pas encore de vecteur."""
     row = conn.execute(
