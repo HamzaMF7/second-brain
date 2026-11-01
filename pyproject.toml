@@ -4,6 +4,7 @@ version = "0.0.1"
 description = "Mémoire personnelle locale interrogeable en langage naturel"
 requires-python = ">=3.12"
 dependencies = [
+    "fastembed>=0.9.1",
     "pymupdf>=1.28.2",
     "typer>=0.27.3",
 ]
@@ -41,7 +42,10 @@ untyped_calls_exclude = ["pymupdf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib", "-m", "not model"]
+markers = [
+  "model: utilise un vrai modèle d'embeddings, téléchargé au premier lancement (uv run pytest -m model)",
+]
 
 [dependency-groups]
 dev = [

@@ -34,6 +34,24 @@ def default_database_path() -> Path:
     return Path(data_home) / "second-brain" / "index.db"
 
 
+def default_model_cache_dir() -> Path:
+    """Cache des modèles d'embeddings : $XDG_CACHE_HOME/second-brain/models (Linux).
+
+    fastembed utilise /tmp par défaut, vidé au redémarrage : le modèle serait retéléchargé,
+    alors que le seul accès réseau autorisé est le téléchargement initial.
+    """
+    cache_home = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    return Path(cache_home) / "second-brain" / "models"
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingConfig:
+    # PROVISOIRE : le plus léger des candidats, pour développer ; choix final à la tâche 6.7.
+    model_name: str = "minishlab/potion-multilingual-128M"
+    batch_size: int = 32  # textes envoyés ensemble au modèle
+    cache_dir: Path = field(default_factory=default_model_cache_dir)
+
+
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
     snippet_tokens: int = 24  # longueur des extraits, en mots (FTS5 : 64 au maximum)
