@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastembed>=0.9.1",
     "pymupdf>=1.28.2",
+    "sqlite-vec>=0.1.9",
     "typer>=0.27.3",
 ]
 
@@ -39,6 +40,11 @@ strict = true
 files = ["src"]
 # PyMuPDF n'est que partiellement typé : on tolère les appels à ses fonctions non annotées.
 untyped_calls_exclude = ["pymupdf"]
+
+[[tool.mypy.overrides]]
+# sqlite-vec ne publie pas de types (pas de py.typed) ; on n'utilise que loadable_path().
+module = "sqlite_vec"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
