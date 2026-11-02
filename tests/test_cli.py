@@ -252,6 +252,49 @@ def test_search_affiche_rang_fichier_score_extrait_et_temps(tmp_path: Path) -> N
     assert "\x02" not in out and "\x03" not in out  # marqueurs internes jamais affichés
 
 
+def test_search_lexical_par_defaut_sans_modele(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert fake_embedder.queries == []
+
+
+def test_search_mode_semantique(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(
+        app, ["search", "choix de base", "--db", str(db), "--mode", "semantic", "-k", "3"]
+    )
+
+    assert result.exit_code == 0
+    assert fake_embedder.queries == ["choix de base"]
+    assert "3 résultats en" in result.stdout
+    assert "Attention" not in result.stderr
+
+
+def test_search_semantique_signale_les_vecteurs_manquants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = indexed_db(tmp_path)  # vecteurs de faux#1
+    monkeypatch.setattr(cli, "_make_embedder", lambda config: FakeEmbedder("autre#2"))
+
+    result = runner.invoke(app, ["search", "base", "--db", str(db), "--mode", "semantic"])
+
+    assert result.exit_code == 0
+    assert "chunk(s) sans vecteur pour autre#2" in result.stderr
+    assert "Aucun résultat" in result.stdout
+
+
+def test_search_mode_inconnu(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "base", "--db", str(db), "--mode", "magique"])
+
+    assert result.exit_code == 2
+
+
 def test_search_couleurs_dans_un_terminal(tmp_path: Path) -> None:
     db = indexed_db(tmp_path)
 

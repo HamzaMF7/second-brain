@@ -1,11 +1,13 @@
 """Point d'entrée de la ligne de commande second-brain."""
 
 import logging
+import sqlite3
 import sys
 import textwrap
 import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated, Protocol
@@ -24,9 +26,12 @@ from second_brain.embeddings.fastembed_embedder import FastEmbedEmbedder
 from second_brain.extraction.errors import ExtractionError
 from second_brain.extraction.registry import default_registry
 from second_brain.indexing.pipeline import EmbeddingError, index_folder
+from second_brain.search.base import Retriever
 from second_brain.search.grouping import search_documents
 from second_brain.search.lexical import LexicalRetriever
+from second_brain.search.semantic import SemanticRetriever
 from second_brain.storage.db import open_database
+from second_brain.storage.vectors import chunks_needing_vectors
 
 PREVIEW_CHARS = 500  # longueur de l'aperçu affiché par `extract`
 CHUNK_PREVIEW_CHARS = 300  # début + fin d'un chunk affichés par `chunks` (sans --full)
@@ -39,6 +44,12 @@ DbOption = Annotated[
         help="Fichier de la base (défaut : ~/.local/share/second-brain/index.db).",
     ),
 ]
+
+
+class SearchMode(StrEnum):
+    LEXICAL = "lexical"
+    SEMANTIC = "semantic"
+
 
 app = typer.Typer(
     help="Mémoire personnelle locale interrogeable en langage naturel.",
@@ -186,8 +197,14 @@ def search(
         bool,
         typer.Option("--all-chunks", help="Un résultat par chunk, sans regroupement par document."),
     ] = False,
+    mode: Annotated[
+        SearchMode,
+        typer.Option(
+            "--mode", help="lexical : mots exacts (BM25) ; semantic : sens proche (embeddings)."
+        ),
+    ] = SearchMode.LEXICAL,
 ) -> None:
-    """Recherche lexicale (BM25) dans les documents indexés."""
+    """Recherche dans les documents indexés, par mots (BM25) ou par sens (embeddings)."""
     db_path = db or default_database_path()
     if not db_path.exists():  # ne pas créer une base vide sur une faute de frappe
         typer.echo(
@@ -200,7 +217,13 @@ def search(
     conn = open_database(db_path)
     try:
         start = time.perf_counter()
-        retriever = LexicalRetriever(conn, config)
+        retriever: Retriever
+        if mode is SearchMode.SEMANTIC:
+            embedder = _make_embedder(EmbeddingConfig())
+            _warn_missing_vectors(conn, embedder.model_id)
+            retriever = SemanticRetriever(conn, embedder, config)
+        else:
+            retriever = LexicalRetriever(conn, config)
         if all_chunks:
             results = retriever.search(query, k)
         else:
@@ -218,6 +241,17 @@ def search(
         typer.echo(typer.style(f"    {result.path}", dim=True))
     plural = "s" if len(results) > 1 else ""
     typer.echo(f"\n{len(results)} résultat{plural} en {elapsed_ms:.0f} ms")
+
+
+def _warn_missing_vectors(conn: sqlite3.Connection, model_id: str) -> None:
+    """Index incomplet (interruption, changement de modèle) : ces chunks seraient ignorés."""
+    missing = len(chunks_needing_vectors(conn, model_id))
+    if missing:
+        typer.echo(
+            f"Attention : {missing} chunk(s) sans vecteur pour {model_id}, ignorés."
+            " Relance `second-brain index <dossier>`.",
+            err=True,
+        )
 
 
 def _highlight(snippet: str, config: SearchConfig) -> str:
