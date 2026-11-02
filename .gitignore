@@ -35,3 +35,4 @@ htmlcov/
 
 # PDF de test générés par scripts/make_pdf_samples.py
 samples/
+datasets/

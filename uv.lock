@@ -1152,6 +1152,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "huggingface-hub" },
     { name = "mypy" },
     { name = "pypdf" },
     { name = "pytest" },
@@ -1168,6 +1169,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "huggingface-hub", specifier = ">=0.34" },
     { name = "mypy", specifier = ">=2.4.0" },
     { name = "pypdf", specifier = ">=6.20.0" },
     { name = "pytest", specifier = ">=9.1.1" },
