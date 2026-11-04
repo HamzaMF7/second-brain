@@ -197,7 +197,7 @@ Je suis en apprentissage. Ton rôle : binôme qui m'explique, pas remplaçant qu
 ```bash
 uv sync                                  # installer
 uv run pytest                            # tests
-uv run ruff check . && uv run mypy src   # qualité
+uv run ruff check . && uv run mypy       # qualité (src/ et eval/)
 uv run second-brain index <dossier>      # indexer
 uv run second-brain search "<requête>"   # rechercher
 uv run python eval/run_eval.py           # évaluer

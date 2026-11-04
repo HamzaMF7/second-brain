@@ -1,0 +1,53 @@
+# Questions d'évaluation sur samples/pdf (6 PDF inventés), écrites à la tâche 3.6.
+# Chaque question vise un piège précis (synonymes, langue, césure, scan…).
+# expected : chemins relatifs à `root`, lui-même relatif à ce fichier.
+root: ../samples/pdf
+questions:
+  - id: S01
+    question: taux de reprise après contrôle qualité
+    type: exact
+    expected: [rapport-annuel-long.pdf]
+  - id: S02
+    question: Paul Garnier responsable sécurité
+    type: exact
+    expected: [compte-rendu-facon-word.pdf]
+  - id: S03
+    question: Rappel@5 0,83
+    type: exact
+    expected: [slides-presentation.pdf]
+  - id: S04
+    question: Quelle méthode de recherche obtient le meilleur rappel ?
+    type: question
+    expected: [article-deux-colonnes.pdf]
+  - id: S05
+    question: Retrouve le document où on parlait de la refonte de l'intranet
+    type: question
+    expected: [compte-rendu-facon-word.pdf]
+  - id: S06  # synonymes : le rapport parle de « numérisation des archives municipales »
+    question: copies informatiques des vieux dossiers communaux
+    type: reformulation
+    expected: [rapport-annuel-long.pdf]
+  - id: S07  # le document dit « données personnelles », « droits d'accès »
+    question: éviter que les infos privées des employés apparaissent dans les résultats
+    type: reformulation
+    expected: [compte-rendu-facon-word.pdf]
+  - id: S08  # paraphrase partielle : un seul mot commun, « bénévoles »
+    question: bénévoles qui recopient les textes écrits à la main
+    type: reformulation
+    expected: [rapport-annuel-long.pdf]
+  - id: S09  # question anglaise, document français
+    question: hybrid search evaluation recall
+    type: multilingue
+    expected: [article-deux-colonnes.pdf]
+  - id: S10  # singulier ; le document dit « registres de délibérations »
+    question: registre délibération
+    type: exact
+    expected: [rapport-annuel-long.pdf]
+  - id: S11  # coupé « pro-venance » par une césure dans le PDF
+    question: provenance
+    type: exact
+    expected: [rapport-annuel-long.pdf]
+  - id: S12  # PDF scanné, sans couche de texte : introuvable sans OCR
+    question: demande de consultation des registres de délibérations de 1890
+    type: exact
+    expected: [courrier-scanne.pdf]
