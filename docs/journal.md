@@ -191,3 +191,42 @@ vocabulaire change. Deux échecs viennent de l'extraction, pas du classement.
 | potion | 0,38 | 0,72 | 15 s | 1,4 Go |
 | embeddinggemma | 0,48 | 0,75 | 1 h 55 | 4,6 Go |
 | e5-large | 0,28 | 0,63 | 3 h 26 | 4,7 Go |
+
+## 2026-11-04 — Étape 7 : recherche hybride (fin de la V0)
+
+**Fait**
+- `rrf()` pure et générique : k obligatoire, poids facultatifs, égalités départagées par
+  le meilleur rang puis l'ordre des listes.
+- `HybridRetriever` : top 30 lexical + top 30 sémantique, fusion par chunk, regroupement
+  par document. `--mode hybrid` par défaut ; provenance affichée (`BM25 #3 · sens #1`)
+  au lieu d'un score RRF illisible.
+- Banc d'évaluation dans le projet : `eval/questions.yaml` (samples), chargeur EDiTh,
+  métriques testées, `run_eval.py` avec résultats JSON reproductibles.
+- 18 variantes mesurées → RRF standard gardé (ADR 0010). README en anglais et en français.
+- Rétrospective : `docs/retrospective-v0.md`. 360 tests.
+
+**Appris**
+- On ne peut pas additionner un score BM25 (sans borne, variable selon la requête) et un
+  cosinus (échelle propre au modèle) : RRF ne garde que les rangs.
+- k règle le choix entre le champion d'une liste (k petit) et le consensus (k grand).
+- RRF récompense le consensus même quand une des deux voix se trompe (S06 : le bon
+  document passe 2e derrière un faux consensus).
+- Le sémantique renvoie toujours des voisins : tout ce qui compte « les chunks trouvés »
+  doit s'appuyer sur BM25, sinon il compte tout.
+- Une hypothèse séduisante (fusion par document) peut être fausse : mesurée, elle fait
+  moins bien.
+
+**Difficile**
+- Interpréter des jeux qui se contredisent : l'hybride gagne nettement sur samples et
+  perd face à BM25 sur EDiTh, quelle que soit la variante.
+- Résister au surapprentissage : 18 variantes sur 40 questions, des écarts dans le bruit.
+- Un résultat sauvegardé contenait un chemin personnel (`cache_dir`) : retiré, historique
+  réécrit avant publication.
+
+**Chiffres** (MRR@10, attendus indexables)
+
+| | samples (11) | EDiTh (40) |
+|---|---|---|
+| BM25 | 0,64 | 0,67 |
+| Sémantique | 0,82 | 0,48 |
+| Hybride RRF k=60 | 0,86 | 0,57 |
