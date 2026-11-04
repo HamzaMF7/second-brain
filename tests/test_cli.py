@@ -3,12 +3,23 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pymupdf
+import pytest
+from fakes import FakeEmbedder
 from typer.testing import CliRunner
 
+from second_brain import cli
 from second_brain.cli import app
 
 runner = CliRunner()
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")  # codes de style du terminal : \x1b[1m, \x1b[0m…
+
+
+@pytest.fixture(autouse=True)
+def fake_embedder(monkeypatch: pytest.MonkeyPatch) -> FakeEmbedder:
+    """Jamais de vrai modèle dans les tests de la CLI (ni téléchargement, ni lenteur)."""
+    embedder = FakeEmbedder("faux#1")
+    monkeypatch.setattr(cli, "_make_embedder", lambda config: embedder)
+    return embedder
 
 
 def test_version_affiche_la_version_du_paquet() -> None:
@@ -133,6 +144,24 @@ def test_index_affiche_le_resume(tmp_path: Path) -> None:
     assert "Durée" in out
 
 
+def test_index_calcule_les_vecteurs(tmp_path: Path) -> None:
+    result = runner.invoke(app, index_args(make_folder(tmp_path), tmp_path / "index.db"))
+
+    assert result.exit_code == 0
+    assert "Vecteurs    : 2 calculés en" in ANSI_ESCAPE.sub("", result.stdout)
+    assert "(faux#1)" in result.stdout
+
+
+def test_index_modele_en_panne(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+    fake_embedder.fail_on_call = 1
+
+    result = runner.invoke(app, index_args(make_folder(tmp_path), tmp_path / "index.db"))
+
+    assert result.exit_code == 1
+    assert "échec du modèle faux#1 (RuntimeError)" in result.stderr
+    assert "relancez `index`" in result.stderr
+
+
 def test_index_deuxieme_passage_inchange(tmp_path: Path) -> None:
     folder = make_folder(tmp_path)
     db = tmp_path / "index.db"
@@ -213,7 +242,7 @@ def indexed_db(tmp_path: Path) -> Path:
 def test_search_affiche_rang_fichier_score_extrait_et_temps(tmp_path: Path) -> None:
     db = indexed_db(tmp_path)
 
-    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db), "--mode", "lexical"])
 
     assert result.exit_code == 0
     out = result.stdout
@@ -221,6 +250,76 @@ def test_search_affiche_rang_fichier_score_extrait_et_temps(tmp_path: Path) -> N
     assert "## PostgreSQL Base relationnelle" in out  # extrait sur une ligne
     assert "1 résultat en " in out and " ms" in out
     assert "\x02" not in out and "\x03" not in out  # marqueurs internes jamais affichés
+
+
+def test_search_lexical_sans_modele(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db), "--mode", "lexical"])
+
+    assert result.exit_code == 0
+    assert fake_embedder.queries == []
+
+
+def test_search_hybride_par_defaut_affiche_la_provenance(
+    tmp_path: Path, fake_embedder: FakeEmbedder
+) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert fake_embedder.queries == ["postgresql"]
+    # Trouvé par les deux listes : premier ; les autres documents, par le sens seulement.
+    assert re.search(r" 1\. comparatif\.md  BM25 #1 · sens #\d+", result.stdout)
+    assert re.search(r" 2\. \S+  sens #\d+\n", result.stdout)
+
+
+def test_search_hybride_signale_les_vecteurs_manquants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = indexed_db(tmp_path)
+    monkeypatch.setattr(cli, "_make_embedder", lambda config: FakeEmbedder("autre#2"))
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "chunk(s) sans vecteur pour autre#2" in result.stderr
+    assert " 1. comparatif.md  BM25 #1\n" in result.stdout  # BM25 seul, faute de vecteurs
+
+
+def test_search_mode_semantique(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(
+        app, ["search", "choix de base", "--db", str(db), "--mode", "semantic", "-k", "3"]
+    )
+
+    assert result.exit_code == 0
+    assert fake_embedder.queries == ["choix de base"]
+    assert "3 résultats en" in result.stdout
+    assert "Attention" not in result.stderr
+
+
+def test_search_semantique_signale_les_vecteurs_manquants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = indexed_db(tmp_path)  # vecteurs de faux#1
+    monkeypatch.setattr(cli, "_make_embedder", lambda config: FakeEmbedder("autre#2"))
+
+    result = runner.invoke(app, ["search", "base", "--db", str(db), "--mode", "semantic"])
+
+    assert result.exit_code == 0
+    assert "chunk(s) sans vecteur pour autre#2" in result.stderr
+    assert "Aucun résultat" in result.stdout
+
+
+def test_search_mode_inconnu(tmp_path: Path) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "base", "--db", str(db), "--mode", "magique"])
+
+    assert result.exit_code == 2
 
 
 def test_search_couleurs_dans_un_terminal(tmp_path: Path) -> None:
@@ -252,7 +351,7 @@ def test_search_k_limite_les_resultats(tmp_path: Path) -> None:
 def test_search_aucun_resultat(tmp_path: Path) -> None:
     db = indexed_db(tmp_path)
 
-    result = runner.invoke(app, ["search", "kubernetes", "--db", str(db)])
+    result = runner.invoke(app, ["search", "kubernetes", "--db", str(db), "--mode", "lexical"])
 
     assert result.exit_code == 0
     assert "Aucun résultat" in result.stdout
@@ -356,10 +455,12 @@ def test_search_un_document_par_ligne_et_tous_les_chunks_en_option(tmp_path: Pat
         (folder / f"divers-{i}.md").write_text(text, encoding="utf-8")
     runner.invoke(app, ["index", str(folder), "--db", str(db)])
 
-    grouped = runner.invoke(app, ["search", "archives", "--db", str(db)]).stdout
-    raw = runner.invoke(app, ["search", "archives", "--all-chunks", "--db", str(db)]).stdout
+    lexical = ["--mode", "lexical", "--db", str(db)]
+    grouped = runner.invoke(app, ["search", "archives", *lexical]).stdout
+    raw = runner.invoke(app, ["search", "archives", "--all-chunks", *lexical]).stdout
 
     assert grouped.count("gros.md  ") == 1
+    assert re.search(r"gros\.md  [\d.]+ · \d+ passages", grouped)
     assert "2 résultats" in grouped
     assert raw.count("gros.md  ") > 1
 

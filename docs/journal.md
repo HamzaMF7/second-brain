@@ -149,3 +149,84 @@ vocabulaire change. Deux échecs viennent de l'extraction, pas du classement.
 - Corpus `samples/pdf` : 5 → 19 chunks. « recherche hybride » : écart slides / article
   passé de 1,05 / 0,62 à 2,87 / 2,77 (la pénalité de longueur a presque disparu).
   Pas de mesure Recall/MRR : l'évaluation n'existe pas encore.
+
+## 2026-11-04 — Étape 6 : embeddings et recherche vectorielle
+
+**Fait**
+- Interface `Embedder` et `FastEmbedEmbedder` (fastembed, ONNX) : préfixes et
+  normalisation gérés par nous, lots, chargement paresseux du modèle.
+- `model_id` = nom + signature des préfixes : changer de modèle ou de préfixes recalcule
+  les vecteurs concernés, et seulement eux.
+- sqlite-vec chargé à chaque connexion ; `chunk_vectors` en table ordinaire (migration
+  005), purge en cascade, recherche en force brute.
+- Indexation en deux phases : le texte par document (tout ou rien), puis les vecteurs
+  manquants par lots. Une interruption est reprise au passage suivant.
+- `search --mode semantic`. Modèle par défaut : embeddinggemma-300m (ADR 0009).
+- 303 tests (+ 1 avec un vrai modèle, `-m model`).
+
+**Appris**
+- Un embedding est un point dans un espace où la proximité = le sens ; vecteurs
+  normalisés → cosinus = produit scalaire.
+- fastembed n'ajoute ni les préfixes ni toujours la normalisation : oublier `query: `
+  dégrade e5 en silence, sans aucune erreur.
+- Les vecteurs sont un index dérivé : mieux vaut « manquant » (visible, réparable) que
+  « faux » (invisible).
+- Le plus gros modèle n'est pas le meilleur : e5-large (560 M) finit dernier sur nos deux
+  jeux, derrière embeddinggemma (300 M) et même potion sur `samples`.
+- Le jeu de questions décide du gagnant : sur EDiTh (codes, noms propres) BM25 gagne ;
+  sur `samples` (synonymes, langue, césure) le sémantique gagne. D'où l'hybride.
+
+**Difficile**
+- Les tests de la CLI chargeaient le vrai modèle sans le dire (35 s, téléchargement en
+  CI) : il a fallu un point d'injection (`_make_embedder`).
+- L'archive EDiTh contenait 263 fichiers macOS `._*.pdf` à exclure.
+- 13 h 44 d'horloge pour 1 h 55 de calcul : la machine s'était mise en veille
+  (`systemd-inhibit` ensuite). `time.perf_counter` ne compte pas la veille, `/usr/bin/time` si.
+
+**Chiffres** (exploratoires, script hors projet, étape 4 reportée)
+
+| | EDiTh MRR | samples MRR | Vecteurs EDiTh (6 375 chunks) | Mémoire |
+|---|---|---|---|---|
+| BM25 | 0,67 | 0,58 | – | – |
+| potion | 0,38 | 0,72 | 15 s | 1,4 Go |
+| embeddinggemma | 0,48 | 0,75 | 1 h 55 | 4,6 Go |
+| e5-large | 0,28 | 0,63 | 3 h 26 | 4,7 Go |
+
+## 2026-11-04 — Étape 7 : recherche hybride (fin de la V0)
+
+**Fait**
+- `rrf()` pure et générique : k obligatoire, poids facultatifs, égalités départagées par
+  le meilleur rang puis l'ordre des listes.
+- `HybridRetriever` : top 30 lexical + top 30 sémantique, fusion par chunk, regroupement
+  par document. `--mode hybrid` par défaut ; provenance affichée (`BM25 #3 · sens #1`)
+  au lieu d'un score RRF illisible.
+- Banc d'évaluation dans le projet : `eval/questions.yaml` (samples), chargeur EDiTh,
+  métriques testées, `run_eval.py` avec résultats JSON reproductibles.
+- 18 variantes mesurées → RRF standard gardé (ADR 0010). README en anglais et en français.
+- Rétrospective : `docs/retrospective-v0.md`. 360 tests.
+
+**Appris**
+- On ne peut pas additionner un score BM25 (sans borne, variable selon la requête) et un
+  cosinus (échelle propre au modèle) : RRF ne garde que les rangs.
+- k règle le choix entre le champion d'une liste (k petit) et le consensus (k grand).
+- RRF récompense le consensus même quand une des deux voix se trompe (S06 : le bon
+  document passe 2e derrière un faux consensus).
+- Le sémantique renvoie toujours des voisins : tout ce qui compte « les chunks trouvés »
+  doit s'appuyer sur BM25, sinon il compte tout.
+- Une hypothèse séduisante (fusion par document) peut être fausse : mesurée, elle fait
+  moins bien.
+
+**Difficile**
+- Interpréter des jeux qui se contredisent : l'hybride gagne nettement sur samples et
+  perd face à BM25 sur EDiTh, quelle que soit la variante.
+- Résister au surapprentissage : 18 variantes sur 40 questions, des écarts dans le bruit.
+- Un résultat sauvegardé contenait un chemin personnel (`cache_dir`) : retiré, historique
+  réécrit avant publication.
+
+**Chiffres** (MRR@10, attendus indexables)
+
+| | samples (11) | EDiTh (40) |
+|---|---|---|
+| BM25 | 0,64 | 0,67 |
+| Sémantique | 0,82 | 0,48 |
+| Hybride RRF k=60 | 0,86 | 0,57 |

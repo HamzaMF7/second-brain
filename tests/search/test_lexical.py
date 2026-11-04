@@ -82,6 +82,16 @@ def test_scores_positifs_et_decroissants_le_meilleur_en_premier(
     assert results[0].score > results[1].score
 
 
+def test_rang_lexical_renseigne(conn: sqlite3.Connection) -> None:
+    for i in range(3):
+        add(conn, f"/notes/archive-{i}.md", f"archives municipales lot {i}")
+
+    results = LexicalRetriever(conn).search("archives", 10)
+
+    assert [r.lexical_rank for r in results] == [1, 2, 3]
+    assert all(r.semantic_rank is None for r in results)
+
+
 def test_k_limite_le_nombre_de_resultats(conn: sqlite3.Connection) -> None:
     for i in range(5):
         add(conn, f"/notes/archive-{i}.md", f"archives municipales lot {i}")

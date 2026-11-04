@@ -4,7 +4,9 @@ version = "0.0.1"
 description = "Mémoire personnelle locale interrogeable en langage naturel"
 requires-python = ">=3.12"
 dependencies = [
+    "fastembed>=0.9.1",
     "pymupdf>=1.28.2",
+    "sqlite-vec>=0.1.9",
     "typer>=0.27.3",
 ]
 
@@ -35,18 +37,30 @@ select = [
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src"]
+files = ["src", "eval"]
 # PyMuPDF n'est que partiellement typé : on tolère les appels à ses fonctions non annotées.
 untyped_calls_exclude = ["pymupdf"]
 
+[[tool.mypy.overrides]]
+# sqlite-vec ne publie pas de types (pas de py.typed) ; on n'utilise que loadable_path().
+module = "sqlite_vec"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
+pythonpath = ["tests", "eval"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib", "-m", "not model"]
+markers = [
+  "model: utilise un vrai modèle d'embeddings, téléchargé au premier lancement (uv run pytest -m model)",
+]
 
 [dependency-groups]
 dev = [
+    "huggingface-hub>=0.34",
     "mypy>=2.4.0",
     "pypdf>=6.20.0",
     "pytest>=9.1.1",
+    "pyyaml>=6.0.3",
     "ruff>=0.16.10",
+    "types-pyyaml>=6.0.12.20261103",
 ]

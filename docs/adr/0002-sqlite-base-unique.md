@@ -1,7 +1,7 @@
 # 0002 — SQLite comme base unique (tables, FTS5, vecteurs)
 
 - Date : 2026-10-08
-- Statut : Accepté
+- Statut : Accepté — point « Cohérence » précisé par l'ADR [0009](0009-modele-embeddings-et-stockage-vectoriel.md) (vecteurs calculés dans une phase séparée)
 
 ## Contexte
 

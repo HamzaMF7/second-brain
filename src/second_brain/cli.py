@@ -1,11 +1,13 @@
 """Point d'entrée de la ligne de commande second-brain."""
 
 import logging
+import sqlite3
 import sys
 import textwrap
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated, Protocol
@@ -13,13 +15,25 @@ from typing import Annotated, Protocol
 import typer
 
 from second_brain.chunking.structured import StructuredChunker
-from second_brain.config import ChunkingConfig, SearchConfig, default_database_path
+from second_brain.config import (
+    ChunkingConfig,
+    EmbeddingConfig,
+    SearchConfig,
+    default_database_path,
+)
+from second_brain.embeddings.base import Embedder
+from second_brain.embeddings.fastembed_embedder import FastEmbedEmbedder
 from second_brain.extraction.errors import ExtractionError
 from second_brain.extraction.registry import default_registry
-from second_brain.indexing.pipeline import index_folder
+from second_brain.indexing.pipeline import EmbeddingError, index_folder
+from second_brain.search.base import Retriever
 from second_brain.search.grouping import search_documents
+from second_brain.search.hybrid import HybridRetriever
 from second_brain.search.lexical import LexicalRetriever
+from second_brain.search.models import SearchResult
+from second_brain.search.semantic import SemanticRetriever
 from second_brain.storage.db import open_database
+from second_brain.storage.vectors import chunks_needing_vectors
 
 PREVIEW_CHARS = 500  # longueur de l'aperçu affiché par `extract`
 CHUNK_PREVIEW_CHARS = 300  # début + fin d'un chunk affichés par `chunks` (sans --full)
@@ -32,6 +46,13 @@ DbOption = Annotated[
         help="Fichier de la base (défaut : ~/.local/share/second-brain/index.db).",
     ),
 ]
+
+
+class SearchMode(StrEnum):
+    LEXICAL = "lexical"
+    SEMANTIC = "semantic"
+    HYBRID = "hybrid"
+
 
 app = typer.Typer(
     help="Mémoire personnelle locale interrogeable en langage naturel.",
@@ -74,21 +95,26 @@ def index(
 ) -> None:
     """Indexe un dossier : ajoute, met à jour et purge les documents."""
     db_path = db or default_database_path()
+    embedding_config = EmbeddingConfig()
+    embedder = _make_embedder(embedding_config)
     conn = open_database(db_path)
     try:
         with _verbose_logging(verbose), ExitStack() as stack:
-            bars: list[_Updatable] = []
-
-            def on_progress(done: int, total: int) -> None:
-                if not bars:  # le total n'est connu qu'après le scan
-                    bars.append(
-                        stack.enter_context(
-                            typer.progressbar(length=total, label="Indexation", file=sys.stderr)
-                        )
-                    )
-                bars[0].update(1)
-
-            report = index_folder(conn, folder, default_registry(), on_progress=on_progress)
+            report = index_folder(
+                conn,
+                folder,
+                default_registry(),
+                on_progress=_progress_bar(stack, "Indexation"),
+                embedder=embedder,
+                embedding_config=embedding_config,
+                on_embed_progress=_progress_bar(stack, "Embeddings"),
+            )
+    except EmbeddingError as exc:
+        typer.echo(
+            f"Erreur : {exc}. Le texte est indexé ; relancez `index` pour finir les vecteurs.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
     finally:
         conn.close()
 
@@ -104,6 +130,11 @@ def index(
         ("PDF scannés", f"{report.scanned_pdfs}  (ajoutés ou modifiés, sans texte exploitable)"),
         ("Erreurs", str(report.errors) + ("  (détails : --verbose)" if report.errors else "")),
         ("Ignorés", f"{report.skipped.total()}" + (f"  ({skipped})" if skipped else "")),
+        (
+            "Vecteurs",
+            f"{report.embedded} calculés en {report.embedding_seconds:.1f} s"
+            f"  ({embedder.model_id})",
+        ),
         ("Durée", f"{report.seconds:.1f} s"),
     ]
     for label, value in lines:
@@ -114,6 +145,31 @@ class _Updatable(Protocol):
     """Ce que la commande utilise de la barre de progression de Typer."""
 
     def update(self, n_steps: int) -> None: ...
+
+
+def _make_embedder(config: EmbeddingConfig) -> Embedder:
+    """Point unique de construction du modèle (remplacé par un faux dans les tests de la CLI).
+
+    Le modèle n'est chargé, voire téléchargé, qu'au premier vecteur à calculer.
+    """
+    return FastEmbedEmbedder(config)
+
+
+def _progress_bar(stack: ExitStack, label: str) -> Callable[[int, int], None]:
+    """Callback de progression qui ouvre la barre au premier appel (le total est alors connu)."""
+    bars: list[_Updatable] = []
+    shown = 0
+
+    def on_progress(done: int, total: int) -> None:
+        nonlocal shown
+        if not bars:
+            bars.append(
+                stack.enter_context(typer.progressbar(length=total, label=label, file=sys.stderr))
+            )
+        bars[0].update(done - shown)
+        shown = done
+
+    return on_progress
 
 
 @contextmanager
@@ -144,8 +200,16 @@ def search(
         bool,
         typer.Option("--all-chunks", help="Un résultat par chunk, sans regroupement par document."),
     ] = False,
+    mode: Annotated[
+        SearchMode,
+        typer.Option(
+            "--mode",
+            help="hybrid : les deux, fusionnés (RRF) ; lexical : mots exacts (BM25), sans"
+            " charger de modèle ; semantic : sens proche (embeddings).",
+        ),
+    ] = SearchMode.HYBRID,
 ) -> None:
-    """Recherche lexicale (BM25) dans les documents indexés."""
+    """Recherche dans les documents indexés, par mots (BM25), par sens (embeddings) ou les deux."""
     db_path = db or default_database_path()
     if not db_path.exists():  # ne pas créer une base vide sur une faute de frappe
         typer.echo(
@@ -158,7 +222,15 @@ def search(
     conn = open_database(db_path)
     try:
         start = time.perf_counter()
-        retriever = LexicalRetriever(conn, config)
+        retriever: Retriever = LexicalRetriever(conn, config)
+        if mode is not SearchMode.LEXICAL:
+            embedder = _make_embedder(EmbeddingConfig())
+            _warn_missing_vectors(conn, embedder.model_id)
+            semantic = SemanticRetriever(conn, embedder, config)
+            if mode is SearchMode.SEMANTIC:
+                retriever = semantic
+            else:
+                retriever = HybridRetriever(retriever, semantic, config)
         if all_chunks:
             results = retriever.search(query, k)
         else:
@@ -171,11 +243,39 @@ def search(
         typer.echo(f"Aucun résultat pour « {query} » ({elapsed_ms:.0f} ms).")
         return
     for rank, result in enumerate(results, start=1):
-        typer.echo(f"{rank:>2}. {typer.style(result.path.name, bold=True)}  {result.score:.2f}")
+        name = typer.style(result.path.name, bold=True)
+        typer.echo(f"{rank:>2}. {name}  {_describe(result, mode)}")
         typer.echo(f"    {_highlight(result.snippet, config)}")
         typer.echo(typer.style(f"    {result.path}", dim=True))
     plural = "s" if len(results) > 1 else ""
     typer.echo(f"\n{len(results)} résultat{plural} en {elapsed_ms:.0f} ms")
+
+
+def _describe(result: SearchResult, mode: SearchMode) -> str:
+    """Score lisible : la provenance en hybride (un score RRF ne parle pas), sinon le score."""
+    if mode is SearchMode.HYBRID:
+        parts = []
+        if result.lexical_rank is not None:
+            parts.append(f"BM25 #{result.lexical_rank}")
+        if result.semantic_rank is not None:
+            parts.append(f"sens #{result.semantic_rank}")
+        text = " · ".join(parts)
+    else:
+        text = f"{result.score:.2f}"
+    if result.matched_chunks > 1:
+        text += f" · {result.matched_chunks} passages"
+    return text
+
+
+def _warn_missing_vectors(conn: sqlite3.Connection, model_id: str) -> None:
+    """Index incomplet (interruption, changement de modèle) : ces chunks seraient ignorés."""
+    missing = len(chunks_needing_vectors(conn, model_id))
+    if missing:
+        typer.echo(
+            f"Attention : {missing} chunk(s) sans vecteur pour {model_id}, ignorés."
+            " Relance `second-brain index <dossier>`.",
+            err=True,
+        )
 
 
 def _highlight(snippet: str, config: SearchConfig) -> str:

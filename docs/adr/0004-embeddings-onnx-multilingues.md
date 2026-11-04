@@ -1,7 +1,7 @@
 # 0004 — Embeddings multilingues locaux via ONNX
 
 - Date : 2026-10-08
-- Statut : Accepté — modèle précis à choisir à l'étape 6
+- Statut : Accepté — modèle précis choisi dans l'ADR [0009](0009-modele-embeddings-et-stockage-vectoriel.md)
 
 ## Contexte
 

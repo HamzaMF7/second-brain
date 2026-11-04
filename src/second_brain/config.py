@@ -3,6 +3,7 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,24 @@ def default_database_path() -> Path:
     return Path(data_home) / "second-brain" / "index.db"
 
 
+def default_model_cache_dir() -> Path:
+    """Cache des modèles d'embeddings : $XDG_CACHE_HOME/second-brain/models (Linux).
+
+    fastembed utilise /tmp par défaut, vidé au redémarrage : le modèle serait retéléchargé,
+    alors que le seul accès réseau autorisé est le téléchargement initial.
+    """
+    cache_home = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    return Path(cache_home) / "second-brain" / "models"
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingConfig:
+    # Choisi à la tâche 6.7 (ADR 0009) ; potion-multilingual-128M = alternative légère.
+    model_name: str = "google/embeddinggemma-300m"
+    batch_size: int = 32  # textes envoyés ensemble au modèle
+    cache_dir: Path = field(default_factory=default_model_cache_dir)
+
+
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
     snippet_tokens: int = 24  # longueur des extraits, en mots (FTS5 : 64 au maximum)
@@ -45,6 +64,14 @@ class SearchConfig:
     # Regroupement par document : on demande fetch_factor × k chunks au retriever (doublé
     # tant qu'il manque des documents distincts), puis on garde le meilleur par document.
     fetch_factor: int = 5
+    # Hybride : candidats demandés à chaque méthode (au moins k), puis fusion RRF.
+    hybrid_candidates: int = 30
+    rrf_k: int = 60  # RRF standard, choisi à la tâche 7.5 (ADR 0010)
+    rrf_weights: tuple[float, float] = (1.0, 1.0)  # (lexical, sémantique)
+    # "chunk" : RRF sur les chunks, regroupement par document ensuite. "document" : chaque
+    # liste est d'abord réduite à ses documents, pour que deux chunks différents d'un même
+    # document (un par méthode) comptent comme un consensus.
+    fusion: Literal["chunk", "document"] = "chunk"
 
 
 @dataclass(frozen=True, slots=True)
