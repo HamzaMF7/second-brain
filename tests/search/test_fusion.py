@@ -94,3 +94,30 @@ def test_identifiants_entiers() -> None:
 def test_resultat_deterministe() -> None:
     lists = [["a", "b", "c", "d"], ["d", "c", "b", "a"]]
     assert rrf(lists, k=60) == rrf(lists, k=60)
+
+
+def test_poids_multiplient_chaque_contribution() -> None:
+    scores = dict(rrf([["a"], ["b"]], k=60, weights=[2.0, 1.0]))
+    assert scores["a"] == pytest.approx(2 / 61)
+    assert scores["b"] == pytest.approx(1 / 61)
+
+
+def test_poids_favorisent_une_liste() -> None:
+    lists = [["a", "b"], ["b", "a"]]
+    assert rrf(lists, k=60, weights=[2.0, 1.0])[0][0] == "a"
+    assert rrf(lists, k=60, weights=[1.0, 2.0])[0][0] == "b"
+
+
+def test_poids_egaux_a_un_comme_sans_poids() -> None:
+    lists = [["a", "b", "c"], ["c", "d"]]
+    assert rrf(lists, k=60, weights=[1.0, 1.0]) == rrf(lists, k=60)
+
+
+def test_poids_nombre_incorrect_refuse() -> None:
+    with pytest.raises(ValueError, match="poids"):
+        rrf([["a"], ["b"]], k=60, weights=[1.0])
+
+
+def test_poids_negatif_refuse() -> None:
+    with pytest.raises(ValueError, match="poids"):
+        rrf([["a"], ["b"]], k=60, weights=[1.0, -1.0])

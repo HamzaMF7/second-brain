@@ -3,6 +3,7 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,11 @@ class SearchConfig:
     # Hybride : candidats demandés à chaque méthode (au moins k), puis fusion RRF.
     hybrid_candidates: int = 30
     rrf_k: int = 60  # provisoire : 20 / 60 / 100 mesurés à la tâche 7.5
+    rrf_weights: tuple[float, float] = (1.0, 1.0)  # (lexical, sémantique)
+    # "chunk" : RRF sur les chunks, regroupement par document ensuite. "document" : chaque
+    # liste est d'abord réduite à ses documents, pour que deux chunks différents d'un même
+    # document (un par méthode) comptent comme un consensus.
+    fusion: Literal["chunk", "document"] = "chunk"
 
 
 @dataclass(frozen=True, slots=True)

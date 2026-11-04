@@ -1,8 +1,8 @@
 """Reciprocal Rank Fusion : fusionne des classements en n'utilisant que les rangs.
 
-score(d) = Σ 1 / (k + rang de d dans chaque liste), rang à partir de 1. Un document absent
-d'une liste n'en reçoit rien. Les scores d'origine (BM25, cosinus) sont ignorés : leurs
-échelles ne sont pas comparables.
+score(d) = Σ poids / (k + rang de d dans chaque liste), rang à partir de 1, poids 1 par
+défaut. Un document absent d'une liste n'en reçoit rien. Les scores d'origine (BM25,
+cosinus) sont ignorés : leurs échelles ne sont pas comparables.
 """
 
 from collections.abc import Hashable, Sequence
@@ -16,7 +16,9 @@ class _Entry:
     first_seen: int  # ordre de première apparition, listes lues dans l'ordre donné
 
 
-def rrf[T: Hashable](rankings: Sequence[Sequence[T]], *, k: int) -> list[tuple[T, float]]:
+def rrf[T: Hashable](
+    rankings: Sequence[Sequence[T]], *, k: int, weights: Sequence[float] | None = None
+) -> list[tuple[T, float]]:
     """(élément, score RRF) du meilleur au moins bon.
 
     Égalités départagées par le meilleur rang obtenu dans une liste, puis par l'ordre de
@@ -25,14 +27,18 @@ def rrf[T: Hashable](rankings: Sequence[Sequence[T]], *, k: int) -> list[tuple[T
     """
     if k < 0:
         raise ValueError(f"k doit être positif ou nul (reçu {k})")
+    if weights is None:
+        weights = [1.0] * len(rankings)
+    if len(weights) != len(rankings) or any(w < 0 for w in weights):
+        raise ValueError(f"poids invalides : {len(rankings)} poids positifs attendus")
     entries: dict[T, _Entry] = {}
-    for ranking in rankings:
+    for ranking, weight in zip(rankings, weights, strict=True):
         seen: set[T] = set()
         for rank, item in enumerate(ranking, start=1):
             if item in seen:
                 continue
             seen.add(item)
-            contribution = 1 / (k + rank)
+            contribution = weight / (k + rank)
             entry = entries.get(item)
             if entry is None:
                 entries[item] = _Entry(contribution, rank, len(entries))

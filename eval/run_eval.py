@@ -1,7 +1,8 @@
 """Évalue les modes de recherche sur un jeu de questions et sauvegarde le résultat.
 
     uv run python eval/run_eval.py --set samples --db datasets/samples.db
-    uv run python eval/run_eval.py --set edith --db datasets/veracier-gemma.db --rrf-k 20 60 100
+    uv run python eval/run_eval.py --set edith --db datasets/veracier-gemma.db --rrf-k 20 60 100 \
+        --weights 1,1 2,1 1,2 --fusion chunk document
 
 Les attendus non indexables (PDF scannés, erreurs) sont retirés avant le calcul : aucune
 méthode de recherche ne peut les trouver. Une question sans attendu indexable est ignorée.
@@ -9,6 +10,7 @@ Chaque exécution est écrite dans eval/results/ avec sa configuration complète
 """
 
 import argparse
+import itertools
 import json
 import sqlite3
 import statistics
@@ -116,6 +118,11 @@ def mean_table(
     return "\n".join(lines), data
 
 
+def parse_weights(text: str) -> tuple[float, float]:
+    lexical, semantic = (float(x) for x in text.split(","))
+    return lexical, semantic
+
+
 def git_commit() -> str:
     out = subprocess.run(
         ["git", "-C", str(PROJECT_ROOT), "describe", "--always", "--dirty"],
@@ -137,6 +144,16 @@ def main() -> None:
         choices=["lexical", "semantic", "hybrid"],
     )
     parser.add_argument("--rrf-k", nargs="+", type=int, default=[SearchConfig().rrf_k])
+    parser.add_argument(
+        "--weights",
+        nargs="+",
+        type=parse_weights,
+        default=[SearchConfig().rrf_weights],
+        help="poids lexical,sémantique (ex. 2,1)",
+    )
+    parser.add_argument(
+        "--fusion", nargs="+", choices=["chunk", "document"], default=[SearchConfig().fusion]
+    )
     args = parser.parse_args()
     if not args.db.is_file():
         sys.exit(f"Base introuvable : {args.db}")
@@ -149,7 +166,10 @@ def main() -> None:
     runs: list[Run] = []
     for mode in args.modes:
         if mode == "hybrid":
-            runs += [Run(f"hybrid k={k}", SearchConfig(rrf_k=k), mode) for k in args.rrf_k]
+            for k, weights, fusion in itertools.product(args.rrf_k, args.weights, args.fusion):
+                config = SearchConfig(rrf_k=k, rrf_weights=weights, fusion=fusion)
+                label = f"hybrid k={k} w={weights[0]:g},{weights[1]:g} {fusion}"
+                runs.append(Run(label, config, mode))
         else:
             runs.append(Run(mode, SearchConfig(), mode))
 
@@ -181,7 +201,7 @@ def main() -> None:
         "removed": removed,
         "embedding": {
             "model_id": embedder.model_id if embedder else None,
-            **{k: str(v) for k, v in asdict(EmbeddingConfig()).items()},
+            "batch_size": EmbeddingConfig().batch_size,  # pas cache_dir : chemin personnel
         },
         "chunking": asdict(ChunkingConfig()),
         "runs": {run.label: {"mode": run.mode, "search": asdict(run.config)} for run in runs},

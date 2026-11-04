@@ -98,3 +98,42 @@ def test_k_nul_n_interroge_personne() -> None:
 
     assert retriever.search("q", 0) == []
     assert lex.requested == sem.requested == []
+
+
+def test_poids_de_la_config() -> None:
+    retriever, _, _ = hybrid([chunk(1), chunk(2)], [chunk(2), chunk(1)])
+    retriever.config = SearchConfig(rrf_weights=(2.0, 1.0))
+
+    assert [r.chunk_id for r in retriever.search("q", 10)] == [1, 2]
+
+
+def test_fusion_par_document_donne_le_bonus_de_consensus() -> None:
+    # Document 1 : chunk 10 trouvé par BM25 (rang 2), chunk 11 par le sens (rang 2).
+    # Document 2 : chunk 20, 1er de BM25 seulement. Document 3 : chunk 30, 1er du sens.
+    lexical = [chunk(20, document_id=2), chunk(10, "\x02lex\x03", document_id=1)]
+    semantic = [chunk(30, document_id=3), chunk(11, "sens", document_id=1)]
+    by_chunk, _, _ = hybrid(lexical, semantic)
+    by_document, _, _ = hybrid(lexical, semantic)
+    by_document.config = SearchConfig(fusion="document")
+
+    # Par chunk : 10 et 11 sont deux chunks différents, aucun consensus.
+    assert by_chunk.search("q", 10)[0].document_id in {2, 3}
+    # Par document : 1/62 + 1/62 > 1/61, le document 1 passe devant.
+    results = by_document.search("q", 10)
+    assert [r.document_id for r in results] == [1, 2, 3]
+    first = results[0]
+    assert (first.chunk_id, first.snippet) == (10, "\x02lex\x03")  # chunk lexical, surligné
+    assert (first.lexical_rank, first.semantic_rank) == (2, 2)  # rangs de document
+
+
+def test_fusion_par_document_garde_le_meilleur_chunk_de_chaque_liste() -> None:
+    lexical = [chunk(10, document_id=1), chunk(11, document_id=1), chunk(20, document_id=2)]
+    retriever, _, _ = hybrid(lexical, [])
+    retriever.config = SearchConfig(fusion="document")
+
+    results = retriever.search("q", 10)
+
+    assert [(r.document_id, r.chunk_id, r.lexical_rank) for r in results] == [
+        (1, 10, 1),
+        (2, 20, 2),
+    ]
