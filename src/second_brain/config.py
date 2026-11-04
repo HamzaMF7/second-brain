@@ -46,8 +46,8 @@ def default_model_cache_dir() -> Path:
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingConfig:
-    # PROVISOIRE : le plus léger des candidats, pour développer ; choix final à la tâche 6.7.
-    model_name: str = "minishlab/potion-multilingual-128M"
+    # Choisi à la tâche 6.7 (ADR 0009) ; potion-multilingual-128M = alternative légère.
+    model_name: str = "google/embeddinggemma-300m"
     batch_size: int = 32  # textes envoyés ensemble au modèle
     cache_dir: Path = field(default_factory=default_model_cache_dir)
 
