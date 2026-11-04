@@ -1,7 +1,7 @@
 # 0003 — Recherche hybride BM25 + vectoriel fusionnée par RRF
 
 - Date : 2026-10-08
-- Statut : Accepté — paramètres à fixer par l'évaluation (étape 7)
+- Statut : Accepté — paramètres fixés par l'ADR [0010](0010-parametres-de-fusion.md)
 
 ## Contexte
 
