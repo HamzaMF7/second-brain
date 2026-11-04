@@ -1,19 +1,25 @@
 """Regroupement des résultats par document : on ne garde que le meilleur chunk de chacun."""
 
-from collections.abc import Iterable
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import replace
 
 from second_brain.search.base import Retriever
 from second_brain.search.models import SearchResult
 
 
-def group_by_document(results: Iterable[SearchResult]) -> list[SearchResult]:
-    """Premier (donc meilleur) résultat de chaque document, dans l'ordre reçu."""
+def group_by_document(results: Sequence[SearchResult]) -> list[SearchResult]:
+    """Premier (donc meilleur) résultat de chaque document, dans l'ordre reçu.
+
+    `matched_chunks` : nombre de chunks du document parmi `results` trouvés par BM25.
+    """
+    counts = Counter(r.document_id for r in results if r.lexical_rank is not None)
     seen: set[int] = set()
     grouped: list[SearchResult] = []
     for result in results:
         if result.document_id not in seen:
             seen.add(result.document_id)
-            grouped.append(result)
+            grouped.append(replace(result, matched_chunks=counts[result.document_id]))
     return grouped
 
 

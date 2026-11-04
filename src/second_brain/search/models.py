@@ -15,3 +15,10 @@ class SearchResult:
     snippet: str  # extrait, termes trouvés entre SearchConfig.highlight_open / _close
     page: int | None = None
     section: str | None = None
+    # Rempli au regroupement par document : chunks de ce document trouvés par BM25 (qui
+    # contiennent donc des mots de la requête). Le sémantique n'y compte pas : il renvoie
+    # toujours ses plus proches voisins, pertinents ou non.
+    matched_chunks: int = 0
+    # Rang du chunk dans la liste BM25 et dans la liste sémantique (None = absent).
+    lexical_rank: int | None = None
+    semantic_rank: int | None = None

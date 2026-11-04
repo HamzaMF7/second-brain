@@ -28,7 +28,9 @@ from second_brain.extraction.registry import default_registry
 from second_brain.indexing.pipeline import EmbeddingError, index_folder
 from second_brain.search.base import Retriever
 from second_brain.search.grouping import search_documents
+from second_brain.search.hybrid import HybridRetriever
 from second_brain.search.lexical import LexicalRetriever
+from second_brain.search.models import SearchResult
 from second_brain.search.semantic import SemanticRetriever
 from second_brain.storage.db import open_database
 from second_brain.storage.vectors import chunks_needing_vectors
@@ -49,6 +51,7 @@ DbOption = Annotated[
 class SearchMode(StrEnum):
     LEXICAL = "lexical"
     SEMANTIC = "semantic"
+    HYBRID = "hybrid"
 
 
 app = typer.Typer(
@@ -200,11 +203,13 @@ def search(
     mode: Annotated[
         SearchMode,
         typer.Option(
-            "--mode", help="lexical : mots exacts (BM25) ; semantic : sens proche (embeddings)."
+            "--mode",
+            help="hybrid : les deux, fusionnés (RRF) ; lexical : mots exacts (BM25), sans"
+            " charger de modèle ; semantic : sens proche (embeddings).",
         ),
-    ] = SearchMode.LEXICAL,
+    ] = SearchMode.HYBRID,
 ) -> None:
-    """Recherche dans les documents indexés, par mots (BM25) ou par sens (embeddings)."""
+    """Recherche dans les documents indexés, par mots (BM25), par sens (embeddings) ou les deux."""
     db_path = db or default_database_path()
     if not db_path.exists():  # ne pas créer une base vide sur une faute de frappe
         typer.echo(
@@ -217,13 +222,15 @@ def search(
     conn = open_database(db_path)
     try:
         start = time.perf_counter()
-        retriever: Retriever
-        if mode is SearchMode.SEMANTIC:
+        retriever: Retriever = LexicalRetriever(conn, config)
+        if mode is not SearchMode.LEXICAL:
             embedder = _make_embedder(EmbeddingConfig())
             _warn_missing_vectors(conn, embedder.model_id)
-            retriever = SemanticRetriever(conn, embedder, config)
-        else:
-            retriever = LexicalRetriever(conn, config)
+            semantic = SemanticRetriever(conn, embedder, config)
+            if mode is SearchMode.SEMANTIC:
+                retriever = semantic
+            else:
+                retriever = HybridRetriever(retriever, semantic, config)
         if all_chunks:
             results = retriever.search(query, k)
         else:
@@ -236,11 +243,28 @@ def search(
         typer.echo(f"Aucun résultat pour « {query} » ({elapsed_ms:.0f} ms).")
         return
     for rank, result in enumerate(results, start=1):
-        typer.echo(f"{rank:>2}. {typer.style(result.path.name, bold=True)}  {result.score:.2f}")
+        name = typer.style(result.path.name, bold=True)
+        typer.echo(f"{rank:>2}. {name}  {_describe(result, mode)}")
         typer.echo(f"    {_highlight(result.snippet, config)}")
         typer.echo(typer.style(f"    {result.path}", dim=True))
     plural = "s" if len(results) > 1 else ""
     typer.echo(f"\n{len(results)} résultat{plural} en {elapsed_ms:.0f} ms")
+
+
+def _describe(result: SearchResult, mode: SearchMode) -> str:
+    """Score lisible : la provenance en hybride (un score RRF ne parle pas), sinon le score."""
+    if mode is SearchMode.HYBRID:
+        parts = []
+        if result.lexical_rank is not None:
+            parts.append(f"BM25 #{result.lexical_rank}")
+        if result.semantic_rank is not None:
+            parts.append(f"sens #{result.semantic_rank}")
+        text = " · ".join(parts)
+    else:
+        text = f"{result.score:.2f}"
+    if result.matched_chunks > 1:
+        text += f" · {result.matched_chunks} passages"
+    return text
 
 
 def _warn_missing_vectors(conn: sqlite3.Connection, model_id: str) -> None:

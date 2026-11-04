@@ -63,6 +63,9 @@ class SearchConfig:
     # Regroupement par document : on demande fetch_factor × k chunks au retriever (doublé
     # tant qu'il manque des documents distincts), puis on garde le meilleur par document.
     fetch_factor: int = 5
+    # Hybride : candidats demandés à chaque méthode (au moins k), puis fusion RRF.
+    hybrid_candidates: int = 30
+    rrf_k: int = 60  # provisoire : 20 / 60 / 100 mesurés à la tâche 7.5
 
 
 @dataclass(frozen=True, slots=True)

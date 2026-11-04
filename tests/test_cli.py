@@ -242,7 +242,7 @@ def indexed_db(tmp_path: Path) -> Path:
 def test_search_affiche_rang_fichier_score_extrait_et_temps(tmp_path: Path) -> None:
     db = indexed_db(tmp_path)
 
-    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db), "--mode", "lexical"])
 
     assert result.exit_code == 0
     out = result.stdout
@@ -252,13 +252,40 @@ def test_search_affiche_rang_fichier_score_extrait_et_temps(tmp_path: Path) -> N
     assert "\x02" not in out and "\x03" not in out  # marqueurs internes jamais affichés
 
 
-def test_search_lexical_par_defaut_sans_modele(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+def test_search_lexical_sans_modele(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
+    db = indexed_db(tmp_path)
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db), "--mode", "lexical"])
+
+    assert result.exit_code == 0
+    assert fake_embedder.queries == []
+
+
+def test_search_hybride_par_defaut_affiche_la_provenance(
+    tmp_path: Path, fake_embedder: FakeEmbedder
+) -> None:
     db = indexed_db(tmp_path)
 
     result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
 
     assert result.exit_code == 0
-    assert fake_embedder.queries == []
+    assert fake_embedder.queries == ["postgresql"]
+    # Trouvé par les deux listes : premier ; les autres documents, par le sens seulement.
+    assert re.search(r" 1\. comparatif\.md  BM25 #1 · sens #\d+", result.stdout)
+    assert re.search(r" 2\. \S+  sens #\d+\n", result.stdout)
+
+
+def test_search_hybride_signale_les_vecteurs_manquants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = indexed_db(tmp_path)
+    monkeypatch.setattr(cli, "_make_embedder", lambda config: FakeEmbedder("autre#2"))
+
+    result = runner.invoke(app, ["search", "postgresql", "--db", str(db)])
+
+    assert result.exit_code == 0
+    assert "chunk(s) sans vecteur pour autre#2" in result.stderr
+    assert " 1. comparatif.md  BM25 #1\n" in result.stdout  # BM25 seul, faute de vecteurs
 
 
 def test_search_mode_semantique(tmp_path: Path, fake_embedder: FakeEmbedder) -> None:
@@ -324,7 +351,7 @@ def test_search_k_limite_les_resultats(tmp_path: Path) -> None:
 def test_search_aucun_resultat(tmp_path: Path) -> None:
     db = indexed_db(tmp_path)
 
-    result = runner.invoke(app, ["search", "kubernetes", "--db", str(db)])
+    result = runner.invoke(app, ["search", "kubernetes", "--db", str(db), "--mode", "lexical"])
 
     assert result.exit_code == 0
     assert "Aucun résultat" in result.stdout
@@ -428,10 +455,12 @@ def test_search_un_document_par_ligne_et_tous_les_chunks_en_option(tmp_path: Pat
         (folder / f"divers-{i}.md").write_text(text, encoding="utf-8")
     runner.invoke(app, ["index", str(folder), "--db", str(db)])
 
-    grouped = runner.invoke(app, ["search", "archives", "--db", str(db)]).stdout
-    raw = runner.invoke(app, ["search", "archives", "--all-chunks", "--db", str(db)]).stdout
+    lexical = ["--mode", "lexical", "--db", str(db)]
+    grouped = runner.invoke(app, ["search", "archives", *lexical]).stdout
+    raw = runner.invoke(app, ["search", "archives", "--all-chunks", *lexical]).stdout
 
     assert grouped.count("gros.md  ") == 1
+    assert re.search(r"gros\.md  [\d.]+ · \d+ passages", grouped)
     assert "2 résultats" in grouped
     assert raw.count("gros.md  ") > 1
 

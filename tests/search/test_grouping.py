@@ -5,8 +5,11 @@ from second_brain.search.grouping import group_by_document, search_documents
 from second_brain.search.models import SearchResult
 
 
-def result(document_id: int, chunk_id: int, score: float) -> SearchResult:
-    return SearchResult(chunk_id, document_id, Path(f"/doc{document_id}.md"), score, "…")
+def result(
+    document_id: int, chunk_id: int, score: float, lexical_rank: int | None = 1
+) -> SearchResult:
+    path = Path(f"/doc{document_id}.md")
+    return SearchResult(chunk_id, document_id, path, score, "…", lexical_rank=lexical_rank)
 
 
 class FakeRetriever(Retriever):
@@ -25,6 +28,24 @@ def test_group_by_document_garde_le_meilleur_chunk_dans_l_ordre() -> None:
     results = [result(1, 10, 9.0), result(1, 11, 8.0), result(2, 20, 7.0), result(1, 12, 6.0)]
 
     assert [(r.document_id, r.chunk_id) for r in group_by_document(results)] == [(1, 10), (2, 20)]
+
+
+def test_group_by_document_compte_les_chunks_trouves() -> None:
+    results = [result(1, 10, 9.0), result(2, 20, 8.0), result(1, 11, 7.0), result(1, 12, 6.0)]
+
+    assert [(r.document_id, r.matched_chunks) for r in group_by_document(results)] == [
+        (1, 3),
+        (2, 1),
+    ]
+
+
+def test_group_by_document_ne_compte_pas_les_chunks_trouves_par_le_sens_seul() -> None:
+    results = [result(1, 10, 9.0), result(1, 11, 8.0, lexical_rank=None), result(2, 20, 7.0, None)]
+
+    assert [(r.document_id, r.matched_chunks) for r in group_by_document(results)] == [
+        (1, 1),
+        (2, 0),
+    ]
 
 
 def test_search_documents_renvoie_k_documents_distincts() -> None:

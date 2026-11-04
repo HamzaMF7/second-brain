@@ -47,6 +47,9 @@ class LexicalRetriever(Retriever):
                 snippet=snippet,
                 page=page,
                 section=section,
+                lexical_rank=rank,
             )
-            for chunk_id, document_id, path, score, snippet, page, section in rows
+            for rank, (chunk_id, document_id, path, score, snippet, page, section) in enumerate(
+                rows, start=1
+            )
         ]
