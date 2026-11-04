@@ -48,7 +48,7 @@ Principes non négociables :
 - LLM, RAG, chat (V2).
 - Reranker (V2, seulement si l'évaluation montre un gain).
 - Mémoire structurée, knowledge graph, agents (après V2).
-- OCR, PPTX, XLSX.
+- OCR, Excel, HTML (arrivent en V1) ; PPTX.
 - Toute dépendance à un service cloud.
 
 ## 4. Roadmap
@@ -56,7 +56,7 @@ Principes non négociables :
 | Version | Contenu | Statut |
 |---|---|---|
 | V0 | Extraction → SQLite → BM25 → évaluation → chunking → embeddings → hybride (CLI) | **en cours** |
-| V1 | File watcher, DOCX, filtres (dossier/type/date), API FastAPI + interface locale simple | à venir |
+| V1 | OCR des PDF scannés, DOCX, Excel, HTML, file watcher, filtres (dossier/type/date), API FastAPI + interface locale simple | à venir |
 | V2 | Reranker (si mesuré utile), RAG avec citations via Ollama, filtres temporels | à venir |
 | Produit | Tauri, packaging, sécurité API locale, chiffrement au repos | plus tard |
 | Après | Mémoire, knowledge graph, agents | plus tard |

@@ -166,9 +166,9 @@ Résultat normalisé : titre, texte, pages, sections (titres), métadonnées, `i
 |---|---|---|
 | TXT, Markdown | V0 | Markdown : conserver la hiérarchie des titres |
 | PDF | V0 | Bibliothèque à choisir (ADR) ; détecter les PDF scannés |
-| DOCX | V1 | |
-| PPTX, XLSX, HTML, code | plus tard | |
-| Images / PDF scannés (OCR) | plus tard | |
+| DOCX, XLSX, HTML | V1 | |
+| PDF scannés (OCR) | V1 | Détection déjà faite en V0 (statut `scanned`) |
+| PPTX, code, images | plus tard | |
 
 Un fichier illisible ne fait jamais planter l'indexation : il est enregistré avec un statut `error`.
 
@@ -440,7 +440,7 @@ Déclencheur : la V2 me sert au quotidien.
 | Version | Contenu | Critère de sortie |
 |---|---|---|
 | **V0** | Extraction (TXT, MD, PDF) → SQLite → BM25 → évaluation → chunking → embeddings → hybride. CLI. | L'hybride est mesuré contre BM25 et vectoriel ; README avec résultats |
-| **V1** | File watcher, DOCX, filtres, API FastAPI, interface locale simple | Je l'utilise au quotidien plutôt que la CLI |
+| **V1** | OCR des PDF scannés, DOCX, Excel, HTML, file watcher, filtres, API FastAPI, interface locale simple | Je l'utilise au quotidien plutôt que la CLI |
 | **V2** | Reranker (si utile), RAG avec citations (Ollama), évaluation RAG, filtres temporels | Réponses sourcées et vérifiables |
 | **Produit** | Tauri, packaging, sécurité, chiffrement | Installable sur une autre machine en quelques minutes |
 | **Après** | Mémoire, graphe, agents | Chaque fonctionnalité mesurée avant activation |
