@@ -1,5 +1,6 @@
 """Chargement des jeux de questions : YAML du projet et benchmark EDiTh (fichiers inventés)."""
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -61,12 +62,22 @@ def test_yaml_identifiants_uniques(tmp_path: Path) -> None:
 
 
 def test_questions_du_projet_valides() -> None:
+    # samples/pdf est généré (et ignoré par git) : on vérifie les attendus contre la liste
+    # du générateur, pas contre des fichiers absents d'un clone neuf ou de la CI.
+    spec = importlib.util.spec_from_file_location(
+        "make_pdf_samples", PROJECT_ROOT / "scripts" / "make_pdf_samples.py"
+    )
+    assert spec is not None and spec.loader is not None
+    generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generator)
+    generated = {filename for filename, _, _ in generator.SAMPLES}
+
     qset = load_yaml(PROJECT_ROOT / "eval" / "questions.yaml")
 
     assert len(qset.questions) == 12
+    assert qset.root.resolve() == PROJECT_ROOT / "samples" / "pdf"  # sortie par défaut
     for q in qset.questions:
-        for rel in q.expected:
-            assert (qset.root / rel).is_file(), f"{q.id} : {rel} absent"
+        assert q.expected <= generated, f"{q.id} : {sorted(q.expected - generated)} inconnu"
 
 
 def make_edith(root: Path) -> Path:
