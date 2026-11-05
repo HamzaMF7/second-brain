@@ -105,8 +105,8 @@ Raw runs, with full configuration and git commit: [`eval/results/`](eval/results
 Requirements: Linux or macOS, [uv](https://docs.astral.sh/uv/), Python 3.12 with SQLite extension loading enabled (standard on Linux and on uv-managed Pythons).
 
 ```bash
-git clone git@github.com:HamzaMF7/second-brain-.git
-cd second-brain-
+git clone git@github.com:HamzaMF7/second-brain.git
+cd second-brain
 uv sync
 
 uv run second-brain index ~/Documents/notes      # first run downloads the model (~1.2 GB)
